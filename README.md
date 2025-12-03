@@ -67,7 +67,7 @@ Based on historical calibration:
 
                    +--------------+----------------+
                    |      Production Server       |
-                   | 159.69.156.235 (CX43)        |
+                   | 91.99.116.196 (CX43)        |
                    +--------------+----------------+
                                   |
                        Same Stack, Mode=live
@@ -323,7 +323,7 @@ Sent via Telegram/email:
 | Server | IP | Type | Purpose |
 |--------|-----|------|---------|
 | Staging | 94.130.228.55 | CX33 | Paper trading, testing |
-| Production | 159.69.156.235 | CX43 | Live trading |
+| Production | 91.99.116.196 | CX43 | Live trading |
 
 ## Development
 
