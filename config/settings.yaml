@@ -65,9 +65,9 @@ monitoring:
 
 # Alerts
 alerts:
-  enabled: true
+  enabled: false
   telegram:
-    enabled: true
+    enabled: false
   email:
     enabled: false
   thresholds:
