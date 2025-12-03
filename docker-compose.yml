@@ -1,5 +1,8 @@
 services:
   # IB Gateway Container (headless)
+  # Note: gnzsnz/ib-gateway uses socat to relay connections:
+  # - Internal: 127.0.0.1:4001/4002 (IB Gateway direct)
+  # - External (via socat): 0.0.0.0:4003/4004 (for Docker network access)
   ibgateway:
     image: ghcr.io/gnzsnz/ib-gateway:latest
     container_name: ibgateway
@@ -12,15 +15,16 @@ services:
       - AUTO_RESTART_TIME=11:59 PM
       - RELOGIN_AFTER_TWOFA_TIMEOUT=yes
     ports:
-      - "4001:4001"  # Live trading
-      - "4002:4002"  # Paper trading
+      - "4001:4003"  # Live trading (socat relay)
+      - "4002:4004"  # Paper trading (socat relay)
       - "5900:5900"  # VNC (for debugging)
     volumes:
       - ibgateway-data:/root/Jts
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4002 || exit 1"]
+      # Check socat relay port (4004=paper, 4003=live)
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4004 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -41,7 +45,8 @@ services:
     environment:
       - MODE=${MODE:-paper}
       - IBKR_HOST=ibgateway
-      - IBKR_PORT=${IBKR_PORT:-4002}
+      # Use socat relay ports: 4003=live, 4004=paper
+      - IBKR_PORT=${IBKR_PORT:-4004}
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=${DB_NAME:-abstractfinance}
