@@ -161,7 +161,7 @@ AbstractFinance/
 IBKR_USERNAME=abstractcapital
 IBKR_PASSWORD=<redacted>
 IBKR_ACCOUNT_ID=U23203300
-IBKR_PORT=4002
+IBKR_PORT=4004                    # Paper trading via socat relay
 TRADING_MODE=paper
 MODE=paper
 DB_PASSWORD=AbstractFinance_Staging_2024!
@@ -174,7 +174,7 @@ ENVIRONMENT=staging
 IBKR_USERNAME=abstractcapital
 IBKR_PASSWORD=<redacted>
 IBKR_ACCOUNT_ID=U23203300
-IBKR_PORT=4001
+IBKR_PORT=4003                    # Live trading via socat relay
 TRADING_MODE=live
 MODE=live
 DB_PASSWORD=AbstractFinance_Prod_2024_Secure!
@@ -192,13 +192,25 @@ ENVIRONMENT=production
    - Added `limits_config.allow_structured_metadata: false` for compatibility with latest Loki
 
 2. **Docker Compose Health Check**
-   - Changed from `nc -z` to `echo > /dev/tcp/localhost/4002` (nc not available in container)
+   - Changed from `nc -z` to `echo > /dev/tcp/localhost/4004` (nc not available in container)
    - Added `start_period: 120s` to allow IB Gateway login time
    - Changed trading-engine dependency from `service_healthy` to `service_started`
 
 3. **Scheduler Environment Variables** (`src/scheduler.py`)
    - Added environment variable priority over settings.yaml
    - `IBKR_HOST`, `IBKR_PORT`, `MODE` now read from environment for Docker networking
+
+4. **IB Gateway Socat Relay Ports** (`docker-compose.yml`)
+   - The gnzsnz/ib-gateway image uses socat to relay API connections:
+     - Internal ports 4001/4002 are bound to 127.0.0.1 only
+     - Socat exposes 4003 (live) and 4004 (paper) for Docker network access
+   - Port mapping: host:4001→container:4003, host:4002→container:4004
+   - Trading-engine connects to port 4004 (paper via socat relay)
+
+5. **Continuous Scheduler with Startup Delay** (`src/scheduler.py`)
+   - Added 120-second startup delay to wait for IB Gateway
+   - Added retry logic (5 attempts with 60s delay) for initialization failures
+   - Scheduler runs continuously, executing daily job at 06:00 UTC
 
 ### Disabled Features
 - Telegram alerts (disabled in `config/settings.yaml`)
