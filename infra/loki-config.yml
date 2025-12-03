@@ -16,6 +16,9 @@ common:
     kvstore:
       store: inmemory
 
+limits_config:
+  allow_structured_metadata: false
+
 query_range:
   results_cache:
     cache:
