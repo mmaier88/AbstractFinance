@@ -492,6 +492,13 @@ class ContinuousScheduler:
     Executes the daily run at the configured time each day.
     """
 
+    # Startup delay to wait for IB Gateway to be ready
+    STARTUP_DELAY_SECONDS = 120  # 2 minutes
+    # Max retries for initialization failures
+    MAX_INIT_RETRIES = 5
+    # Delay between init retries
+    INIT_RETRY_DELAY_SECONDS = 60  # 1 minute
+
     def __init__(self):
         self.running = True
         self.scheduler: Optional[DailyScheduler] = None
@@ -551,11 +558,72 @@ class ContinuousScheduler:
         delta = next_run - now
         return max(int(delta.total_seconds()), 60)  # Minimum 60 seconds
 
+    def _wait_for_ib_gateway(self) -> bool:
+        """
+        Wait for IB Gateway to be ready before proceeding.
+
+        Returns:
+            True if gateway appears ready, False if interrupted
+        """
+        print(f"Waiting {self.STARTUP_DELAY_SECONDS}s for IB Gateway to be ready...")
+
+        # Wait in small increments to allow for graceful shutdown
+        remaining = self.STARTUP_DELAY_SECONDS
+        while remaining > 0 and self.running:
+            time.sleep(min(10, remaining))
+            remaining -= 10
+            if remaining > 0:
+                print(f"  ...{remaining}s remaining")
+
+        return self.running
+
+    def _run_daily_with_retries(self) -> bool:
+        """
+        Run the daily job with retries on initialization failure.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        for attempt in range(1, self.MAX_INIT_RETRIES + 1):
+            print(f"Initialization attempt {attempt}/{self.MAX_INIT_RETRIES}")
+
+            # Create new scheduler instance for each attempt
+            self.scheduler = DailyScheduler()
+
+            try:
+                if self.scheduler.initialize():
+                    result = self.scheduler.run_daily()
+                    print(f"Daily run completed: {json.dumps(result, indent=2)}")
+                    self.last_run_date = date.today()
+                    return True
+                else:
+                    print(f"Initialization failed on attempt {attempt}")
+                    if attempt < self.MAX_INIT_RETRIES:
+                        print(f"Retrying in {self.INIT_RETRY_DELAY_SECONDS}s...")
+                        # Wait before retry
+                        remaining = self.INIT_RETRY_DELAY_SECONDS
+                        while remaining > 0 and self.running:
+                            time.sleep(min(10, remaining))
+                            remaining -= 10
+                        if not self.running:
+                            return False
+            finally:
+                self.scheduler.shutdown()
+                self.scheduler = None
+
+        print(f"Failed to initialize after {self.MAX_INIT_RETRIES} attempts")
+        return False
+
     def run(self):
         """Main loop - runs continuously, executing daily job at scheduled time."""
         print(f"ContinuousScheduler started")
         print(f"Scheduled run time: {self.run_hour:02d}:{self.run_minute:02d} UTC")
         print(f"Current time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+        # Wait for IB Gateway to be ready on startup
+        if not self._wait_for_ib_gateway():
+            print("Startup interrupted")
+            return
 
         while self.running:
             try:
@@ -564,19 +632,7 @@ class ContinuousScheduler:
                     print(f"Starting daily run at {datetime.now(pytz.UTC).isoformat()}")
                     print(f"{'='*60}\n")
 
-                    # Create new scheduler instance for each run
-                    self.scheduler = DailyScheduler()
-
-                    try:
-                        if self.scheduler.initialize():
-                            result = self.scheduler.run_daily()
-                            print(f"Daily run completed: {json.dumps(result, indent=2)}")
-                            self.last_run_date = date.today()
-                        else:
-                            print("Failed to initialize scheduler for daily run")
-                    finally:
-                        self.scheduler.shutdown()
-                        self.scheduler = None
+                    self._run_daily_with_retries()
 
                     print(f"\n{'='*60}")
                     print(f"Daily run finished at {datetime.now(pytz.UTC).isoformat()}")
