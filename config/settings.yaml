@@ -1,0 +1,91 @@
+# AbstractFinance - European Decline Macro Fund
+# Trading Configuration
+
+mode: "paper"  # "paper" or "live"
+
+# Risk Parameters
+vol_target_annual: 0.12          # 12% annualized target volatility
+gross_leverage_max: 2.0          # 200% max gross exposure
+net_leverage_max: 1.0            # 100% max net exposure
+rebalance_threshold_pct: 0.02    # 2% drift threshold triggers rebalance
+
+# Tail Hedge Budget
+hedge_budget_annual_pct: 0.025   # 2.5% NAV/year for tail hedges
+max_drawdown_pct: 0.10           # 10% emergency de-risk trigger
+
+# Sleeve Allocations (risk weights)
+sleeves:
+  core_index_rv: 0.35            # Core US vs EU index spread
+  sector_rv: 0.25                # Sector relative value
+  single_name: 0.15              # Single stock L/S
+  credit_carry: 0.15             # Credit & carry
+  crisis_alpha: 0.05             # Crisis alpha / sovereign stress
+  cash_buffer: 0.05              # Cash/margin buffer
+
+# Momentum / Regime Filter
+momentum:
+  short_window_days: 50
+  long_window_days: 200
+  regime_reduce_factor: 0.5      # Cut exposure by 50% in adverse regime
+
+# Crisis Parameters
+crisis:
+  vix_threshold: 40              # VIX level triggering crisis mode
+  pnl_spike_threshold_pct: 0.10  # 10% daily PnL triggers crisis routine
+  crisis_redeploy_fraction: 0.6  # Sell 60% of ITM hedges to redeploy
+
+# Paper Trading Burn-In
+burn_in_days: 60
+
+# Schedule
+schedule:
+  run_hour_utc: 6
+  run_minute_utc: 0
+  timezone: "America/New_York"
+
+# IBKR Connection
+ibkr:
+  host: "127.0.0.1"
+  paper_port: 4002
+  live_port: 4001
+  client_id: 1
+  timeout: 30
+  readonly: false
+
+# Database
+database:
+  host: "localhost"
+  port: 5432
+  name: "abstractfinance"
+
+# Monitoring
+monitoring:
+  prometheus_port: 9090
+  grafana_port: 3000
+
+# Alerts
+alerts:
+  enabled: true
+  telegram:
+    enabled: true
+  email:
+    enabled: false
+  thresholds:
+    daily_loss_pct: -0.03        # Alert if daily loss > 3%
+    daily_gain_pct: 0.05         # Alert if daily gain > 5%
+    hedge_budget_usage_pct: 0.90 # Alert if 90% hedge budget used
+
+# Backtest Settings
+backtest:
+  start_date: "2010-01-01"
+  end_date: null                  # null = use latest available
+  initial_capital: 10000000       # $10M
+  monte_carlo_paths: 1000
+  monte_carlo_years: 10
+
+# Quantitative Assumptions (calibration targets)
+quant_assumptions:
+  sp500_annual_return: 0.10       # 10% expected
+  eurostoxx_annual_return: 0.03   # 3% expected
+  index_volatility: 0.15          # 15% for both
+  correlation_us_eu: 0.82         # Correlation between US and EU

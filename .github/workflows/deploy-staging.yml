@@ -1,0 +1,47 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Staging Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            cd /srv/abstractfinance
+
+            # Pull latest code
+            git pull origin main
+
+            # Pull latest Docker images
+            docker compose pull
+
+            # Rebuild and restart services
+            docker compose build trading-engine
+            docker compose up -d
+
+            # Health check
+            sleep 30
+            docker compose ps
+            docker compose logs --tail=50 trading-engine
+
+      - name: Notify deployment
+        if: success()
+        run: |
+          echo "Deployed to staging at $(date)"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          echo "Deployment to staging failed at $(date)"

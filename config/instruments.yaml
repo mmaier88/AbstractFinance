@@ -1,0 +1,446 @@
+# AbstractFinance - Instrument Configuration
+# All instruments must be IBKR-tradable
+
+equity_indices:
+  # US Index Instruments
+  us_index_future:
+    symbol: "ES"
+    exchange: "CME"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 50.0
+    description: "E-mini S&P 500 Future"
+
+  us_index_etf:
+    symbol: "SPY"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    multiplier: 1.0
+    description: "SPDR S&P 500 ETF"
+
+  us_index_micro:
+    symbol: "MES"
+    exchange: "CME"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 5.0
+    description: "Micro E-mini S&P 500 Future"
+
+  # EU Index Instruments
+  eu_index_future:
+    symbol: "FESX"
+    exchange: "EUREX"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 10.0
+    description: "Euro STOXX 50 Future"
+
+  eu_index_etf:
+    symbol: "FEZ"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    multiplier: 1.0
+    description: "SPDR Euro STOXX 50 ETF"
+
+  eu_broad_etf:
+    symbol: "IEUR"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    multiplier: 1.0
+    description: "iShares Core MSCI Europe ETF"
+
+fx:
+  # EUR/USD Hedging
+  eurusd_future:
+    symbol: "6E"
+    exchange: "CME"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 125000.0
+    description: "Euro FX Future"
+
+  eurusd_micro:
+    symbol: "M6E"
+    exchange: "CME"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 12500.0
+    description: "Micro Euro FX Future"
+
+  eurusd_spot:
+    symbol: "EUR"
+    exchange: "IDEALPRO"
+    sec_type: "CASH"
+    currency: "USD"
+    multiplier: 1.0
+    description: "EUR.USD Spot FX"
+
+sectors_us:
+  # Technology
+  tech_xlk:
+    symbol: "XLK"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Technology Select Sector SPDR"
+
+  tech_qqq:
+    symbol: "QQQ"
+    exchange: "NASDAQ"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Invesco QQQ Trust"
+
+  tech_igv:
+    symbol: "IGV"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares Expanded Tech-Software ETF"
+
+  tech_smh:
+    symbol: "SMH"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "VanEck Semiconductor ETF"
+
+  # Healthcare
+  health_xlv:
+    symbol: "XLV"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Health Care Select Sector SPDR"
+
+  health_xbi:
+    symbol: "XBI"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "SPDR S&P Biotech ETF"
+
+  health_ibb:
+    symbol: "IBB"
+    exchange: "NASDAQ"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares Biotechnology ETF"
+
+  # Quality/Momentum Factors
+  factor_qual:
+    symbol: "QUAL"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI USA Quality Factor ETF"
+
+  factor_mtum:
+    symbol: "MTUM"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI USA Momentum Factor ETF"
+
+sectors_eu:
+  # European Financials
+  financials_eufn:
+    symbol: "EUFN"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI Europe Financials ETF"
+
+  # Broad Europe
+  broad_fez:
+    symbol: "FEZ"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "SPDR Euro STOXX 50 ETF"
+
+  broad_ieur:
+    symbol: "IEUR"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares Core MSCI Europe ETF"
+
+  # European Value (overweight old economy)
+  value_ewu:
+    symbol: "EWU"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI United Kingdom ETF"
+
+  value_ewg:
+    symbol: "EWG"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI Germany ETF"
+
+credit_us:
+  # Investment Grade
+  ig_lqd:
+    symbol: "LQD"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares iBoxx $ Investment Grade Corporate Bond ETF"
+
+  # High Yield
+  hy_hyg:
+    symbol: "HYG"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares iBoxx $ High Yield Corporate Bond ETF"
+
+  hy_jnk:
+    symbol: "JNK"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "SPDR Bloomberg High Yield Bond ETF"
+
+  # Loans/BDCs
+  loans_bkln:
+    symbol: "BKLN"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Invesco Senior Loan ETF"
+
+  loans_srln:
+    symbol: "SRLN"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "SPDR Blackstone Senior Loan ETF"
+
+  bdc_arcc:
+    symbol: "ARCC"
+    exchange: "NASDAQ"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Ares Capital Corporation"
+
+  bdc_main:
+    symbol: "MAIN"
+    exchange: "NYSE"
+    sec_type: "STK"
+    currency: "USD"
+    description: "Main Street Capital Corporation"
+
+credit_eu:
+  # European Investment Grade
+  ig_ieac:
+    symbol: "IEAC"
+    exchange: "LSE"
+    sec_type: "STK"
+    currency: "GBP"
+    description: "iShares Core EUR Corp Bond UCITS ETF"
+
+  # European High Yield
+  hy_ihyg:
+    symbol: "IHYG"
+    exchange: "LSE"
+    sec_type: "STK"
+    currency: "GBP"
+    description: "iShares EUR High Yield Corp Bond UCITS ETF"
+
+options:
+  # S&P 500 Options
+  spx_index:
+    underlying: "SPX"
+    exchange: "CBOE"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "S&P 500 Index Options"
+
+  spy_etf:
+    underlying: "SPY"
+    exchange: "ARCA"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "SPY ETF Options"
+
+  # Euro STOXX Options
+  sx5e_index:
+    underlying: "SX5E"
+    exchange: "EUREX"
+    sec_type: "OPT"
+    currency: "EUR"
+    multiplier: 10.0
+    description: "Euro STOXX 50 Index Options"
+
+  fez_etf:
+    underlying: "FEZ"
+    exchange: "ARCA"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "FEZ ETF Options"
+
+  # VIX Options
+  vix_index:
+    underlying: "VIX"
+    exchange: "CBOE"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "VIX Index Options"
+
+  # Credit Options
+  hyg_etf:
+    underlying: "HYG"
+    exchange: "ARCA"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "HYG ETF Options"
+
+  jnk_etf:
+    underlying: "JNK"
+    exchange: "ARCA"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "JNK ETF Options"
+
+sovereign_futures:
+  # French OAT (10Y)
+  france_oat:
+    symbol: "FOAT"
+    exchange: "EUREX"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 1000.0
+    description: "French Government Bond Future (OAT)"
+
+  # German Bund (10Y)
+  germany_bund:
+    symbol: "FGBL"
+    exchange: "EUREX"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 1000.0
+    description: "Euro-Bund Future"
+
+  # Italian BTP
+  italy_btp:
+    symbol: "FBTP"
+    exchange: "EUREX"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 1000.0
+    description: "Italian Government Bond Future (BTP)"
+
+french_equities:
+  # French Banks
+  bnp_paribas:
+    symbol: "BNP"
+    exchange: "SBF"
+    sec_type: "STK"
+    currency: "EUR"
+    description: "BNP Paribas"
+
+  societe_generale:
+    symbol: "GLE"
+    exchange: "SBF"
+    sec_type: "STK"
+    currency: "EUR"
+    description: "Societe Generale"
+
+  credit_agricole:
+    symbol: "ACA"
+    exchange: "SBF"
+    sec_type: "STK"
+    currency: "EUR"
+    description: "Credit Agricole"
+
+  # CAC 40 Future
+  cac_future:
+    symbol: "FCE"
+    exchange: "MONEP"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 10.0
+    description: "CAC 40 Index Future"
+
+volatility:
+  # VIX Future
+  vix_future:
+    symbol: "VX"
+    exchange: "CFE"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 1000.0
+    description: "CBOE Volatility Index Future"
+
+  # VSTOXX Future
+  vstoxx_future:
+    symbol: "FVS"
+    exchange: "EUREX"
+    sec_type: "FUT"
+    currency: "EUR"
+    multiplier: 100.0
+    description: "VSTOXX Mini Future"
+
+# Single Stock Universe for Systematic L/S
+single_stocks:
+  us_long_candidates:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - NVDA
+    - META
+    - TSLA
+    - UNH
+    - JNJ
+    - V
+    - MA
+    - HD
+    - PG
+    - COST
+    - ABBV
+    - LLY
+    - MRK
+    - CRM
+    - ADBE
+    - AMD
+    - AVGO
+    - ORCL
+    - NFLX
+    - INTC
+    - CSCO
+
+  eu_short_candidates:
+    - VOW3.DE    # Volkswagen
+    - BMW.DE    # BMW
+    - DAI.DE    # Mercedes-Benz
+    - BAS.DE    # BASF
+    - SIE.DE    # Siemens
+    - DTE.DE    # Deutsche Telekom
+    - DBK.DE    # Deutsche Bank
+    - EOAN.DE   # E.ON
+    - RWE.DE    # RWE
+    - HEN3.DE   # Henkel
+    - FRE.DE    # Fresenius
+    - BNP.PA    # BNP Paribas
+    - SAN.PA    # Sanofi
+    - AIR.PA    # Airbus
+    - OR.PA     # L'Oreal
+    - MC.PA     # LVMH
+    - TTE.PA    # TotalEnergies
+    - SU.PA     # Schneider Electric
+    - AI.PA     # Air Liquide
+    - CS.PA     # AXA
