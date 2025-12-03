@@ -7,10 +7,13 @@ import os
 import sys
 import yaml
 import json
+import time
+import signal
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import pandas as pd
+import pytz
 
 from .data_feeds import DataFeed, load_instruments_config, load_settings
 from .portfolio import PortfolioState, load_portfolio_state, save_portfolio_state, load_returns_history, save_returns_history
@@ -483,19 +486,148 @@ class DailyScheduler:
             self.ib_client.disconnect()
 
 
+class ContinuousScheduler:
+    """
+    Runs the DailyScheduler on a continuous schedule.
+    Executes the daily run at the configured time each day.
+    """
+
+    def __init__(self):
+        self.running = True
+        self.scheduler: Optional[DailyScheduler] = None
+        self.last_run_date: Optional[date] = None
+
+        # Load settings for schedule config
+        settings = load_settings("config/settings.yaml")
+        schedule_config = settings.get('schedule', {})
+        self.run_hour = schedule_config.get('run_hour_utc', 6)
+        self.run_minute = schedule_config.get('run_minute_utc', 0)
+        self.timezone = pytz.timezone(schedule_config.get('timezone', 'UTC'))
+
+        # Set up signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        print(f"Received signal {signum}, shutting down...")
+        self.running = False
+
+    def _should_run_now(self) -> bool:
+        """Check if it's time to run the daily job."""
+        now = datetime.now(pytz.UTC)
+        today = now.date()
+
+        # Don't run if we already ran today
+        if self.last_run_date == today:
+            return False
+
+        # Check if we're past the scheduled time
+        scheduled_time = now.replace(
+            hour=self.run_hour,
+            minute=self.run_minute,
+            second=0,
+            microsecond=0
+        )
+
+        return now >= scheduled_time
+
+    def _seconds_until_next_run(self) -> int:
+        """Calculate seconds until next scheduled run."""
+        now = datetime.now(pytz.UTC)
+
+        # Next run is today if we haven't run yet and it's before scheduled time
+        next_run = now.replace(
+            hour=self.run_hour,
+            minute=self.run_minute,
+            second=0,
+            microsecond=0
+        )
+
+        # If we're past today's run time or already ran today, schedule for tomorrow
+        if now >= next_run or self.last_run_date == now.date():
+            next_run += timedelta(days=1)
+
+        delta = next_run - now
+        return max(int(delta.total_seconds()), 60)  # Minimum 60 seconds
+
+    def run(self):
+        """Main loop - runs continuously, executing daily job at scheduled time."""
+        print(f"ContinuousScheduler started")
+        print(f"Scheduled run time: {self.run_hour:02d}:{self.run_minute:02d} UTC")
+        print(f"Current time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+        while self.running:
+            try:
+                if self._should_run_now():
+                    print(f"\n{'='*60}")
+                    print(f"Starting daily run at {datetime.now(pytz.UTC).isoformat()}")
+                    print(f"{'='*60}\n")
+
+                    # Create new scheduler instance for each run
+                    self.scheduler = DailyScheduler()
+
+                    try:
+                        if self.scheduler.initialize():
+                            result = self.scheduler.run_daily()
+                            print(f"Daily run completed: {json.dumps(result, indent=2)}")
+                            self.last_run_date = date.today()
+                        else:
+                            print("Failed to initialize scheduler for daily run")
+                    finally:
+                        self.scheduler.shutdown()
+                        self.scheduler = None
+
+                    print(f"\n{'='*60}")
+                    print(f"Daily run finished at {datetime.now(pytz.UTC).isoformat()}")
+                    print(f"{'='*60}\n")
+
+                # Calculate sleep time
+                sleep_seconds = self._seconds_until_next_run()
+                next_run_time = datetime.now(pytz.UTC) + timedelta(seconds=sleep_seconds)
+                print(f"Next run scheduled for: {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                print(f"Sleeping for {sleep_seconds} seconds ({sleep_seconds/3600:.1f} hours)...")
+
+                # Sleep in small increments to allow for graceful shutdown
+                sleep_increment = 60  # Check every minute
+                while sleep_seconds > 0 and self.running:
+                    time.sleep(min(sleep_increment, sleep_seconds))
+                    sleep_seconds -= sleep_increment
+
+            except Exception as e:
+                print(f"Error in scheduler loop: {e}")
+                import traceback
+                traceback.print_exc()
+                # Wait a bit before retrying
+                time.sleep(300)  # 5 minutes
+
+        print("ContinuousScheduler stopped")
+
+
 def main():
     """Main entrypoint for scheduler."""
-    scheduler = DailyScheduler()
+    import argparse
 
-    try:
-        if scheduler.initialize():
-            result = scheduler.run_daily()
-            print(json.dumps(result, indent=2))
-        else:
-            print("Failed to initialize scheduler")
-            sys.exit(1)
-    finally:
-        scheduler.shutdown()
+    parser = argparse.ArgumentParser(description='AbstractFinance Trading Scheduler')
+    parser.add_argument('--once', action='store_true', help='Run once and exit (for testing)')
+    args = parser.parse_args()
+
+    if args.once:
+        # Single run mode (for testing/cron)
+        scheduler = DailyScheduler()
+        try:
+            if scheduler.initialize():
+                result = scheduler.run_daily()
+                print(json.dumps(result, indent=2))
+            else:
+                print("Failed to initialize scheduler")
+                sys.exit(1)
+        finally:
+            scheduler.shutdown()
+    else:
+        # Continuous mode (for Docker)
+        continuous = ContinuousScheduler()
+        continuous.run()
 
 
 if __name__ == "__main__":
