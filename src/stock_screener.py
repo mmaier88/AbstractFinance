@@ -522,7 +522,7 @@ def get_default_us_universe() -> List[str]:
 
 
 def get_default_eu_universe() -> List[str]:
-    """Get default EU stock universe for screening."""
+    """Get default EU stock universe for screening (excludes Dutch stocks)."""
     return [
         # German stocks
         'VOW3.DE', 'BMW.DE', 'MBG.DE',  # Autos
@@ -544,9 +544,6 @@ def get_default_eu_universe() -> List[str]:
         # Spanish stocks
         'SAN.MC', 'BBVA.MC',  # Banks
         'IBE.MC', 'REP.MC',  # Utilities/Energy
-        # Dutch stocks
-        'INGA.AS', 'ABN.AS',  # Banks
-        'SHELL.AS',  # Energy
     ]
 
 

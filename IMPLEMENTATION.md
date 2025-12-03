@@ -281,12 +281,11 @@ Stocks are scored to identify "zombie" companies:
 - Industrial: CAT, DE, UNP, HON, GE, MMM, LMT, RTX
 - Other Quality: V, MA, DIS, NFLX, PYPL, INTU, NOW, SNOW
 
-**EU Short Universe (~30 stocks):**
+**EU Short Universe (~27 stocks, excludes Dutch):**
 - German: VOW3.DE, BMW.DE, MBG.DE, BAS.DE, BAYN.DE, SIE.DE, IFX.DE, DBK.DE, CBK.DE, DTE.DE, DPW.DE, RWE.DE, EOAN.DE
 - French: BNP.PA, GLE.PA, ACA.PA, SAN.PA, AIR.PA, TTE.PA, ENGI.PA, VIV.PA, ORA.PA, SGO.PA
 - Italian: UCG.MI, ISP.MI, ENI.MI, ENEL.MI
 - Spanish: SAN.MC, BBVA.MC, IBE.MC, REP.MC
-- Dutch: INGA.AS, ABN.AS, SHELL.AS
 
 ### Rebalancing Schedule
 - **Frequency**: Monthly screening refresh
