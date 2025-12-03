@@ -60,13 +60,15 @@ class DailyScheduler:
         self.logger = get_trading_logger()
 
         # Initialize components
-        self.mode = self.settings.get('mode', 'paper')
+        # Environment variables take precedence over settings.yaml
+        self.mode = os.environ.get('MODE', self.settings.get('mode', 'paper'))
         self.is_paper = self.mode == 'paper'
 
-        # IB connection settings
+        # IB connection settings - prioritize environment variables for Docker
         ibkr_settings = self.settings.get('ibkr', {})
-        self.ib_host = ibkr_settings.get('host', '127.0.0.1')
-        self.ib_port = ibkr_settings.get('paper_port' if self.is_paper else 'live_port', 4002)
+        self.ib_host = os.environ.get('IBKR_HOST', ibkr_settings.get('host', '127.0.0.1'))
+        default_port = ibkr_settings.get('paper_port' if self.is_paper else 'live_port', 4002)
+        self.ib_port = int(os.environ.get('IBKR_PORT', default_port))
         self.ib_client_id = ibkr_settings.get('client_id', 1)
 
         # Components (initialized on run)
