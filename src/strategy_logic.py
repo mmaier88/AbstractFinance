@@ -13,6 +13,8 @@ from enum import Enum
 from .portfolio import PortfolioState, Sleeve, Position
 from .risk_engine import RiskEngine, RiskDecision, RiskRegime
 from .data_feeds import DataFeed
+from .stock_screener import run_screening, get_default_us_universe, get_default_eu_universe
+from .logging_utils import get_trading_logger
 
 
 @dataclass
@@ -338,36 +340,74 @@ class Strategy:
         """
         Build Single Name L/S sleeve targets.
         US quality growth vs EU "zombies".
+
+        Uses quantitative factor-based screening:
+        - US Longs: Quality (50%) + Momentum (30%) + Size (20%)
+        - EU Shorts: Zombie (50%) + Weakness (30%) + Sector (20%)
+
+        See stock_screener.py for full methodology.
         """
         target_weight = self.sleeve_weights[Sleeve.SINGLE_NAME]
         target_notional = nav * target_weight * scaling
         notional_per_leg = target_notional / 2
 
         targets = {}
+        logger = get_trading_logger()
 
-        # US Long - top quality/growth names
-        us_stocks = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMZN']
-        us_weight_each = notional_per_leg / len(us_stocks)
-
-        for stock in us_stocks:
-            try:
-                price = data_feed.get_last_price(stock)
-                qty = int(us_weight_each / price)
-                if qty > 0:
-                    targets[stock] = qty
-            except Exception:
-                continue
-
-        # EU Short - banks and old economy (simplified)
-        # Note: In production, would use full screening logic
-        eu_stocks_etf = 'EUFN'  # Use ETF as proxy for EU financials short
+        # Run quantitative screening to select stocks
         try:
-            price = data_feed.get_last_price(eu_stocks_etf)
-            qty = int(notional_per_leg / price)
-            if qty > 0:
-                targets['financials_eufn_single'] = -qty
-        except Exception:
-            pass
+            long_symbols, short_symbols, screening_metadata = run_screening(
+                top_n=10,
+                logger=logger
+            )
+            logger.logger.info(
+                "stock_screening_complete",
+                extra={
+                    "long_count": len(long_symbols),
+                    "short_count": len(short_symbols),
+                    "screening_date": screening_metadata.get('screening_date'),
+                    "methodology_version": screening_metadata.get('methodology_version')
+                }
+            )
+        except Exception as e:
+            # Fallback to default stocks if screening fails
+            logger.logger.warning(f"Screening failed, using defaults: {e}")
+            long_symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMZN']
+            short_symbols = []
+            screening_metadata = {}
+
+        # US Long Positions - equal weight across screened stocks
+        if long_symbols:
+            us_weight_each = notional_per_leg / len(long_symbols)
+            for stock in long_symbols:
+                try:
+                    price = data_feed.get_last_price(stock)
+                    qty = int(us_weight_each / price)
+                    if qty > 0:
+                        targets[stock] = qty
+                except Exception:
+                    continue
+
+        # EU Short Positions - equal weight across screened stocks
+        if short_symbols:
+            eu_weight_each = notional_per_leg / len(short_symbols)
+            for stock in short_symbols:
+                try:
+                    price = data_feed.get_last_price(stock)
+                    qty = int(eu_weight_each / price)
+                    if qty > 0:
+                        targets[stock] = -qty  # Negative for short
+                except Exception:
+                    continue
+        else:
+            # Fallback: Use EUFN ETF as proxy for EU shorts if no individual shorts
+            try:
+                price = data_feed.get_last_price('EUFN')
+                qty = int(notional_per_leg / price)
+                if qty > 0:
+                    targets['financials_eufn_single'] = -qty
+            except Exception:
+                pass
 
         return SleeveTargets(
             sleeve=Sleeve.SINGLE_NAME,

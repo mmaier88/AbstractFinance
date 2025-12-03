@@ -119,6 +119,7 @@ AbstractFinance/
 │   ├── portfolio.py           # Positions, NAV, P&L, sleeves
 │   ├── risk_engine.py         # Vol targeting, DD, hedge budget
 │   ├── strategy_logic.py      # Sleeve construction + regime filter
+│   ├── stock_screener.py      # Quantitative factor-based stock selection
 │   ├── tail_hedge.py          # Tail hedge & crisis management
 │   ├── execution_ibkr.py      # IBKR integration via ib_insync
 │   ├── reconnect.py           # Watchdog & reconnection layer
@@ -215,6 +216,88 @@ ENVIRONMENT=production
 ### Disabled Features
 - Telegram alerts (disabled in `config/settings.yaml`)
 - Email alerts (disabled in `config/settings.yaml`)
+
+---
+
+## Stock Screening Methodology
+
+The Single Name sleeve uses quantitative factor-based screening to select stocks dynamically.
+Implementation: `src/stock_screener.py`
+
+### US Long Selection (Quality + Momentum)
+
+Stocks are scored using a composite of three factors:
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| **Quality** | 50% | Fundamental strength indicators |
+| **Momentum** | 30% | Price trend following |
+| **Size** | 20% | Market cap preference for stability |
+
+#### Quality Score Components (0-1 scale)
+- **ROE** (25%): >25% = 0.25, >15% = 0.20, >10% = 0.10
+- **Debt/Equity** (25%): <0.5 = 0.25, <1.0 = 0.20, <1.5 = 0.10
+- **Earnings Growth** (25%): >20% = 0.25, >10% = 0.20, >0% = 0.10
+- **Free Cash Flow** (25%): Positive = 0.25
+
+#### Momentum Score (0-1 scale)
+- 12-1 month momentum (excludes last month to avoid reversal)
+- Normalized: -30% to +50% return maps to 0-1
+
+#### Size Score (0-1 scale)
+- Mega cap (>$500B) = 1.0
+- Large cap (>$200B) = 0.9
+- Mid-large (>$100B) = 0.8
+- Mid cap (>$50B) = 0.7
+
+### EU Short Selection (Zombie + Weakness)
+
+Stocks are scored to identify "zombie" companies:
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| **Zombie** | 50% | Financial distress indicators |
+| **Weakness** | 30% | Negative price momentum |
+| **Sector** | 20% | Structural decline sectors |
+
+#### Zombie Score Components (0-1 scale, higher = more zombie-like)
+- **High Debt** (30%): D/E >2.0 = 0.30, >1.5 = 0.20, >1.0 = 0.10
+- **Revenue Decline** (30%): <-10% = 0.30, <0% = 0.20, <5% = 0.10
+- **Low Margins** (25%): <0% = 0.25, <5% = 0.15, <10% = 0.10
+- **Low ROE** (15%): <0% = 0.15, <5% = 0.10
+
+#### Sector Preferences for EU Shorts
+- **Preferred** (score 1.0): Banks, Autos, Utilities, Industrials, Basic Materials, Energy
+- **Avoid** (score 0.2): Luxury Goods, Technology, Consumer Cyclical
+
+### Stock Universes
+
+**US Long Universe (~55 stocks):**
+- Mega-cap Tech: AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA
+- Enterprise Tech: CRM, ADBE, ORCL, IBM, CSCO, INTC, AMD, AVGO
+- Healthcare: UNH, JNJ, LLY, ABBV, MRK, PFE, TMO, ABT
+- Financials: JPM, BAC, WFC, GS, MS, BLK, SCHW
+- Consumer: WMT, PG, KO, PEP, COST, HD, MCD, NKE
+- Industrial: CAT, DE, UNP, HON, GE, MMM, LMT, RTX
+- Other Quality: V, MA, DIS, NFLX, PYPL, INTU, NOW, SNOW
+
+**EU Short Universe (~30 stocks):**
+- German: VOW3.DE, BMW.DE, MBG.DE, BAS.DE, BAYN.DE, SIE.DE, IFX.DE, DBK.DE, CBK.DE, DTE.DE, DPW.DE, RWE.DE, EOAN.DE
+- French: BNP.PA, GLE.PA, ACA.PA, SAN.PA, AIR.PA, TTE.PA, ENGI.PA, VIV.PA, ORA.PA, SGO.PA
+- Italian: UCG.MI, ISP.MI, ENI.MI, ENEL.MI
+- Spanish: SAN.MC, BBVA.MC, IBE.MC, REP.MC
+- Dutch: INGA.AS, ABN.AS, SHELL.AS
+
+### Rebalancing Schedule
+- **Frequency**: Monthly screening refresh
+- **Position Limits**: Max 5% per single name
+- **Diversification**: Top 10 names per side (configurable)
+- **Fallback**: If screening fails, defaults to AAPL, MSFT, GOOGL, NVDA, AMZN for longs and EUFN ETF for shorts
+
+### Data Source
+- Primary: yfinance API for fundamentals and price history
+- Caching: Daily cache to reduce API calls
+- Fallback: Neutral scores (0.5) if data unavailable
 
 ---
 
