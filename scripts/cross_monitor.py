@@ -1,62 +1,32 @@
 #!/usr/bin/env python3
 """
-Cross-monitoring script for AbstractFinance.
-Each server monitors the other and sends alerts via Telegram.
+Cross-monitoring and auto-remediation for AbstractFinance.
+Each server monitors the other and automatically restarts failed services.
 """
 
 import os
 import sys
 import time
 import json
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 
 # Configuration from environment
 TARGET_URL = os.environ.get('MONITOR_TARGET_URL')  # e.g., http://94.130.228.55:8080/health
+TARGET_HOST = os.environ.get('MONITOR_TARGET_HOST')  # e.g., 94.130.228.55
 TARGET_NAME = os.environ.get('MONITOR_TARGET_NAME', 'remote-server')
 CHECK_INTERVAL = int(os.environ.get('MONITOR_INTERVAL', '60'))  # seconds
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-CONSECUTIVE_FAILURES_THRESHOLD = 3  # Alert after N consecutive failures
-
-
-def send_telegram_alert(message: str) -> bool:
-    """Send alert via Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[ALERT] {message}")
-        return False
-
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = json.dumps({
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"}
-        )
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return response.status == 200
-    except Exception as e:
-        print(f"Failed to send Telegram alert: {e}")
-        return False
+FAILURES_BEFORE_RESTART = int(os.environ.get('FAILURES_BEFORE_RESTART', '3'))
+RESTART_COOLDOWN = int(os.environ.get('RESTART_COOLDOWN', '300'))  # 5 min between restarts
+SSH_KEY_PATH = os.environ.get('SSH_KEY_PATH', '/root/.ssh/id_ed25519')
 
 
 def check_health(url: str, timeout: int = 10) -> Dict[str, Any]:
-    """
-    Check health endpoint.
-
-    Returns:
-        Dict with 'healthy', 'status_code', 'response', 'error', 'latency_ms'
-    """
+    """Check health endpoint."""
     result = {
         "healthy": False,
         "status_code": None,
@@ -90,57 +60,106 @@ def check_health(url: str, timeout: int = 10) -> Dict[str, Any]:
     return result
 
 
+def restart_remote_services(host: str) -> bool:
+    """
+    SSH into remote server and restart Docker services.
+    Returns True if restart was successful.
+    """
+    print(f"[RESTART] Attempting to restart services on {host}...")
+
+    # Build SSH command
+    ssh_cmd = [
+        "ssh",
+        "-i", SSH_KEY_PATH,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=30",
+        f"root@{host}",
+        "cd /srv/abstractfinance && docker compose restart trading-engine ibgateway"
+    ]
+
+    try:
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout for restart
+        )
+
+        if result.returncode == 0:
+            print(f"[RESTART] Successfully restarted services on {host}")
+            print(f"[RESTART] Output: {result.stdout}")
+            return True
+        else:
+            print(f"[RESTART] Failed to restart services on {host}")
+            print(f"[RESTART] Error: {result.stderr}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        print(f"[RESTART] Timeout while restarting services on {host}")
+        return False
+    except Exception as e:
+        print(f"[RESTART] Exception while restarting: {e}")
+        return False
+
+
 def run_monitor():
-    """Main monitoring loop."""
+    """Main monitoring loop with auto-remediation."""
     if not TARGET_URL:
         print("ERROR: MONITOR_TARGET_URL environment variable not set")
         sys.exit(1)
 
-    print(f"Starting cross-monitor")
-    print(f"  Target: {TARGET_NAME} ({TARGET_URL})")
+    if not TARGET_HOST:
+        print("ERROR: MONITOR_TARGET_HOST environment variable not set")
+        sys.exit(1)
+
+    print(f"Cross-monitor with auto-remediation started")
+    print(f"  Target: {TARGET_NAME}")
+    print(f"  Health URL: {TARGET_URL}")
+    print(f"  SSH Host: {TARGET_HOST}")
     print(f"  Check interval: {CHECK_INTERVAL}s")
-    print(f"  Telegram alerts: {'enabled' if TELEGRAM_BOT_TOKEN else 'disabled'}")
+    print(f"  Failures before restart: {FAILURES_BEFORE_RESTART}")
+    print(f"  Restart cooldown: {RESTART_COOLDOWN}s")
     print()
 
     consecutive_failures = 0
+    last_restart_time = 0
     last_status = None
-    alert_sent = False
 
     while True:
         try:
             result = check_health(TARGET_URL)
+            now = time.time()
 
             if result["healthy"]:
                 status_str = f"OK ({result['latency_ms']}ms)"
-
-                # If we were in failure state, send recovery alert
-                if alert_sent:
-                    msg = (
-                        f"<b>RECOVERED</b> {TARGET_NAME}\n"
-                        f"Service is back online\n"
-                        f"Latency: {result['latency_ms']}ms\n"
-                        f"Time: {result['timestamp']}"
-                    )
-                    send_telegram_alert(msg)
-                    alert_sent = False
-
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1
-                status_str = f"FAIL ({result.get('error', 'Unknown error')})"
+                status_str = f"FAIL #{consecutive_failures} ({result.get('error', 'Unknown')})"
 
-                # Send alert after threshold consecutive failures
-                if consecutive_failures >= CONSECUTIVE_FAILURES_THRESHOLD and not alert_sent:
-                    msg = (
-                        f"<b>ALERT</b> {TARGET_NAME} is DOWN!\n"
-                        f"Error: {result.get('error', 'No response')}\n"
-                        f"Consecutive failures: {consecutive_failures}\n"
-                        f"Time: {result['timestamp']}"
-                    )
-                    send_telegram_alert(msg)
-                    alert_sent = True
+                # Check if we should attempt a restart
+                time_since_last_restart = now - last_restart_time
+                can_restart = time_since_last_restart >= RESTART_COOLDOWN
 
-            # Log status change or periodic status
+                if consecutive_failures >= FAILURES_BEFORE_RESTART:
+                    if can_restart:
+                        print(f"[{result['timestamp']}] {consecutive_failures} consecutive failures - triggering restart")
+
+                        if restart_remote_services(TARGET_HOST):
+                            last_restart_time = now
+                            consecutive_failures = 0  # Reset after successful restart
+                            # Wait for services to come up
+                            print(f"[RESTART] Waiting 60s for services to initialize...")
+                            time.sleep(60)
+                        else:
+                            print(f"[RESTART] Restart failed, will retry after cooldown")
+                            last_restart_time = now  # Still apply cooldown
+                    else:
+                        remaining = int(RESTART_COOLDOWN - time_since_last_restart)
+                        print(f"[{result['timestamp']}] {status_str} (restart cooldown: {remaining}s remaining)")
+                        continue
+
+            # Log status
             if result["healthy"] != last_status:
                 print(f"[{result['timestamp']}] Status changed: {status_str}")
             else:

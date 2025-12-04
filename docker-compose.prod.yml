@@ -1,5 +1,5 @@
 # Production-specific overrides
-# Production monitors Staging
+# Production monitors and auto-restarts Staging
 services:
   cross-monitor:
     build:
@@ -9,10 +9,13 @@ services:
     restart: always
     environment:
       - MONITOR_TARGET_URL=http://94.130.228.55:8080/health
+      - MONITOR_TARGET_HOST=94.130.228.55
       - MONITOR_TARGET_NAME=AbstractFinance-staging
       - MONITOR_INTERVAL=60
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - FAILURES_BEFORE_RESTART=3
+      - RESTART_COOLDOWN=300
+    volumes:
+      - /root/.ssh:/root/.ssh:ro
     command: ["python", "-m", "scripts.cross_monitor"]
     networks:
       - trading-network
