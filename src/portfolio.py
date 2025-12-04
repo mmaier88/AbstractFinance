@@ -459,8 +459,8 @@ class PortfolioState:
                 for inst_id, pos in self.positions.items()
             },
             "sleeve_weights": self.get_sleeve_weights(),
-            "pnl_history": self.pnl_history.to_dict() if not self.pnl_history.empty else {},
-            "nav_history": self.nav_history.to_dict() if not self.nav_history.empty else {}
+            "pnl_history": {str(k): v for k, v in self.pnl_history.to_dict().items()} if not self.pnl_history.empty else {},
+            "nav_history": {str(k): v for k, v in self.nav_history.to_dict().items()} if not self.nav_history.empty else {}
         }
 
     @classmethod
