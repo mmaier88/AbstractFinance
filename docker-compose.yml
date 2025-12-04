@@ -14,6 +14,10 @@ services:
       - TWOFA_TIMEOUT_ACTION=restart
       - AUTO_RESTART_TIME=11:59 PM
       - RELOGIN_AFTER_TWOFA_TIMEOUT=yes
+      # Enable API write access (required for order placement)
+      - READ_ONLY_API=no
+      # Auto-confirm API order dialogs
+      - BYPASS_WARNING=yes
     ports:
       - "4001:4003"  # Live trading (socat relay)
       - "4002:4004"  # Paper trading (socat relay)
