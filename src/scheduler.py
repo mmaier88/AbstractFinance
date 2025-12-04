@@ -362,17 +362,18 @@ class DailyScheduler:
         )
 
     def _execute_orders(self, orders: List[OrderSpec]) -> Dict[str, Any]:
-        """Execute orders."""
-        if self.is_paper:
-            # Paper trading - simulate execution
-            return self._simulate_execution(orders)
-        else:
-            # Live trading
-            reports, summary = self.execution_engine.execute_strategy_orders(
-                orders=orders,
-                dry_run=False
-            )
-            return summary
+        """Execute orders via IBKR.
+
+        Both paper and live trading use the execution engine.
+        The IB Gateway connection determines paper vs live based on:
+        - TRADING_MODE environment variable
+        - IBKR_PORT (4002/4004 for paper, 4001/4003 for live)
+        """
+        reports, summary = self.execution_engine.execute_strategy_orders(
+            orders=orders,
+            dry_run=False
+        )
+        return summary
 
     def _simulate_execution(self, orders: List[OrderSpec]) -> Dict[str, Any]:
         """Simulate order execution for paper trading."""
