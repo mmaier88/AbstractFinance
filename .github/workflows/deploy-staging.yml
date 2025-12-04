@@ -27,9 +27,9 @@ jobs:
             # Pull latest Docker images
             docker compose pull
 
-            # Rebuild and restart services
-            docker compose build trading-engine
-            docker compose up -d
+            # Rebuild and restart services (including cross-monitor)
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml build trading-engine cross-monitor
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
 
             # Health check
             sleep 30

@@ -1,0 +1,18 @@
+# Staging-specific overrides
+# Staging monitors Production
+services:
+  cross-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cross-monitor
+    restart: always
+    environment:
+      - MONITOR_TARGET_URL=http://91.99.116.196:8080/health
+      - MONITOR_TARGET_NAME=AbstractFinance-prod
+      - MONITOR_INTERVAL=60
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    command: ["python", "-m", "scripts.cross_monitor"]
+    networks:
+      - trading-network

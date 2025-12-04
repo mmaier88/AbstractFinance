@@ -43,9 +43,9 @@ jobs:
             # Pull latest Docker images
             docker compose pull
 
-            # Rebuild and restart with zero-downtime
-            docker compose build trading-engine
-            docker compose up -d --no-deps trading-engine
+            # Rebuild and restart with zero-downtime (including cross-monitor)
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml build trading-engine cross-monitor
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps trading-engine cross-monitor
 
             # Wait for health check
             sleep 60
