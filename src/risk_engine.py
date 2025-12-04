@@ -303,13 +303,14 @@ class RiskEngine:
         if vix_level >= 25 or current_drawdown <= -0.05:
             return RiskRegime.ELEVATED
 
-        # Normal conditions - no significant drawdown
-        if current_drawdown > -0.01:
+        # Normal conditions - minor drawdown is normal market fluctuation
+        # A 3% drawdown is within normal range with low VIX
+        if current_drawdown > -0.03 and vix_level < 25:
             return RiskRegime.NORMAL
 
-        # Recovery (coming out of drawdown with improving conditions)
-        # Only classify as RECOVERY when between -3% and -1% (coming back from deeper drawdown)
-        if current_drawdown >= -0.03 and vix_level < 20:
+        # Recovery (coming out of deeper drawdown with improving conditions)
+        # Classify as RECOVERY when drawdown is between -5% and -3% with low VIX
+        if current_drawdown >= -0.05 and vix_level < 20 and spread_momentum > 0:
             return RiskRegime.RECOVERY
 
         return RiskRegime.NORMAL
