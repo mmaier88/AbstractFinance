@@ -105,12 +105,22 @@ class RiskEngine:
             window: Lookback window in days
 
         Returns:
-            Annualized volatility
+            Annualized volatility (returns target_vol if insufficient data)
         """
+        # Handle empty or insufficient data
+        if returns is None or len(returns) < 5:
+            # Return target vol as default when no history
+            return self.vol_target_annual
+
         if len(returns) < window:
             window = max(len(returns), 5)
 
         daily_vol = returns.tail(window).std()
+
+        # Handle NaN or zero volatility
+        if pd.isna(daily_vol) or daily_vol <= 0:
+            return self.vol_target_annual
+
         return daily_vol * np.sqrt(252)
 
     def compute_max_drawdown(self, equity_curve: pd.Series) -> float:
@@ -199,15 +209,21 @@ class RiskEngine:
             gross_leverage_max: Maximum gross leverage
 
         Returns:
-            Scaling factor to apply to positions
+            Scaling factor to apply to positions (always returns valid float)
         """
         target_vol = target_vol_annual or self.vol_target_annual
         max_leverage = gross_leverage_max or self.gross_leverage_max
 
-        if realized_vol_annual <= 0:
+        # Handle invalid volatility values
+        if realized_vol_annual is None or pd.isna(realized_vol_annual) or realized_vol_annual <= 0:
             return 1.0
 
         raw_scaling = target_vol / realized_vol_annual
+
+        # Ensure we never return NaN or infinity
+        if pd.isna(raw_scaling) or np.isinf(raw_scaling):
+            return 1.0
+
         return min(raw_scaling, max_leverage)
 
     def compute_var(
