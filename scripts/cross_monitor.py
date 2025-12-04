@@ -60,21 +60,21 @@ def check_health(url: str, timeout: int = 10) -> Dict[str, Any]:
     return result
 
 
-def restart_remote_services(host: str) -> bool:
+def reboot_remote_server(host: str) -> bool:
     """
-    SSH into remote server and restart Docker services.
-    Returns True if restart was successful.
+    SSH into remote server and reboot it.
+    Returns True if reboot command was sent successfully.
     """
-    print(f"[RESTART] Attempting to restart services on {host}...")
+    print(f"[REBOOT] Attempting to reboot server {host}...")
 
-    # Build SSH command
+    # Build SSH command - use 'reboot' to restart the entire server
     ssh_cmd = [
         "ssh",
         "-i", SSH_KEY_PATH,
         "-o", "StrictHostKeyChecking=no",
         "-o", "ConnectTimeout=30",
         f"root@{host}",
-        "cd /srv/abstractfinance && docker compose restart trading-engine ibgateway"
+        "reboot"
     ]
 
     try:
@@ -85,20 +85,20 @@ def restart_remote_services(host: str) -> bool:
             timeout=120  # 2 minute timeout for restart
         )
 
-        if result.returncode == 0:
-            print(f"[RESTART] Successfully restarted services on {host}")
-            print(f"[RESTART] Output: {result.stdout}")
-            return True
-        else:
-            print(f"[RESTART] Failed to restart services on {host}")
-            print(f"[RESTART] Error: {result.stderr}")
-            return False
+        # Reboot command may return non-zero or close connection - that's expected
+        print(f"[REBOOT] Reboot command sent to {host}")
+        return True
 
     except subprocess.TimeoutExpired:
-        print(f"[RESTART] Timeout while restarting services on {host}")
-        return False
+        # Timeout is expected - server is rebooting
+        print(f"[REBOOT] Server {host} is rebooting (connection closed)")
+        return True
     except Exception as e:
-        print(f"[RESTART] Exception while restarting: {e}")
+        # Connection reset is expected during reboot
+        if "Connection reset" in str(e) or "closed by remote" in str(e):
+            print(f"[REBOOT] Server {host} is rebooting")
+            return True
+        print(f"[REBOOT] Exception while rebooting: {e}")
         return False
 
 
@@ -143,16 +143,16 @@ def run_monitor():
 
                 if consecutive_failures >= FAILURES_BEFORE_RESTART:
                     if can_restart:
-                        print(f"[{result['timestamp']}] {consecutive_failures} consecutive failures - triggering restart")
+                        print(f"[{result['timestamp']}] {consecutive_failures} consecutive failures - triggering SERVER REBOOT")
 
-                        if restart_remote_services(TARGET_HOST):
+                        if reboot_remote_server(TARGET_HOST):
                             last_restart_time = now
-                            consecutive_failures = 0  # Reset after successful restart
-                            # Wait for services to come up
-                            print(f"[RESTART] Waiting 60s for services to initialize...")
-                            time.sleep(60)
+                            consecutive_failures = 0  # Reset after reboot
+                            # Wait for server to come back up (reboot takes longer)
+                            print(f"[REBOOT] Waiting 180s for server to reboot and services to start...")
+                            time.sleep(180)
                         else:
-                            print(f"[RESTART] Restart failed, will retry after cooldown")
+                            print(f"[REBOOT] Reboot failed, will retry after cooldown")
                             last_restart_time = now  # Still apply cooldown
                     else:
                         remaining = int(RESTART_COOLDOWN - time_since_last_restart)
