@@ -23,6 +23,7 @@ from .tail_hedge import TailHedgeManager
 from .execution_ibkr import IBClient, ExecutionEngine
 from .reconnect import IBReconnectManager, HealthChecker
 from .logging_utils import setup_logging, TradingLogger, get_trading_logger
+from .healthcheck import start_health_server, get_health_server
 
 try:
     from .alerts import AlertManager
@@ -592,11 +593,14 @@ class ContinuousScheduler:
 
             try:
                 if self.scheduler.initialize():
+                    # Update health server with IB connected status
+                    get_health_server().update_ib_status(True)
                     result = self.scheduler.run_daily()
                     print(f"Daily run completed: {json.dumps(result, indent=2)}")
                     self.last_run_date = date.today()
                     return True
                 else:
+                    get_health_server().update_ib_status(False)
                     print(f"Initialization failed on attempt {attempt}")
                     if attempt < self.MAX_INIT_RETRIES:
                         print(f"Retrying in {self.INIT_RETRY_DELAY_SECONDS}s...")
@@ -620,9 +624,14 @@ class ContinuousScheduler:
         print(f"Scheduled run time: {self.run_hour:02d}:{self.run_minute:02d} UTC")
         print(f"Current time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
+        # Start health check server for external monitoring
+        health_server = start_health_server(port=8080)
+        print("Health check server running on port 8080")
+
         # Wait for IB Gateway to be ready on startup
         if not self._wait_for_ib_gateway():
             print("Startup interrupted")
+            health_server.stop()
             return
 
         while self.running:
@@ -632,7 +641,14 @@ class ContinuousScheduler:
                     print(f"Starting daily run at {datetime.now(pytz.UTC).isoformat()}")
                     print(f"{'='*60}\n")
 
-                    self._run_daily_with_retries()
+                    success = self._run_daily_with_retries()
+
+                    # Update health server with run result
+                    health_server.update_daily_run({
+                        "timestamp": datetime.now(pytz.UTC).isoformat(),
+                        "success": success,
+                        "date": date.today().isoformat()
+                    })
 
                     print(f"\n{'='*60}")
                     print(f"Daily run finished at {datetime.now(pytz.UTC).isoformat()}")
