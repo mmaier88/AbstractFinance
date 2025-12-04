@@ -18,6 +18,8 @@ services:
       - READ_ONLY_API=no
       # Auto-confirm API order dialogs
       - BYPASS_WARNING=yes
+      # Auto-take over existing sessions (when user logged in elsewhere)
+      - EXISTING_SESSION_DETECTED_ACTION=primary
     ports:
       - "4001:4003"  # Live trading (socat relay)
       - "4002:4004"  # Paper trading (socat relay)
