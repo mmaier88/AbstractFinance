@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 Cross-monitoring and auto-remediation for AbstractFinance.
-Each server monitors the other and automatically restarts failed services.
+Each server monitors the other and automatically fixes failed services.
+
+Escalation strategy:
+1. First failure threshold: Restart Docker containers
+2. If still failing after container restart: Reboot entire server
 """
 
 import os
@@ -20,8 +24,9 @@ TARGET_URL = os.environ.get('MONITOR_TARGET_URL')  # e.g., http://94.130.228.55:
 TARGET_HOST = os.environ.get('MONITOR_TARGET_HOST')  # e.g., 94.130.228.55
 TARGET_NAME = os.environ.get('MONITOR_TARGET_NAME', 'remote-server')
 CHECK_INTERVAL = int(os.environ.get('MONITOR_INTERVAL', '60'))  # seconds
-FAILURES_BEFORE_RESTART = int(os.environ.get('FAILURES_BEFORE_RESTART', '3'))
-RESTART_COOLDOWN = int(os.environ.get('RESTART_COOLDOWN', '300'))  # 5 min between restarts
+FAILURES_BEFORE_CONTAINER_RESTART = int(os.environ.get('FAILURES_BEFORE_RESTART', '3'))
+FAILURES_BEFORE_SERVER_REBOOT = int(os.environ.get('FAILURES_BEFORE_REBOOT', '6'))
+ACTION_COOLDOWN = int(os.environ.get('ACTION_COOLDOWN', '300'))  # 5 min between actions
 SSH_KEY_PATH = os.environ.get('SSH_KEY_PATH', '/root/.ssh/id_ed25519')
 
 
@@ -60,14 +65,53 @@ def check_health(url: str, timeout: int = 10) -> Dict[str, Any]:
     return result
 
 
-def reboot_remote_server(host: str) -> bool:
-    """
-    SSH into remote server and reboot it.
-    Returns True if reboot command was sent successfully.
-    """
-    print(f"[REBOOT] Attempting to reboot server {host}...")
+def run_ssh_command(host: str, command: str, timeout: int = 120) -> tuple[bool, str]:
+    """Run a command on remote host via SSH."""
+    ssh_cmd = [
+        "ssh",
+        "-i", SSH_KEY_PATH,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=30",
+        f"root@{host}",
+        command
+    ]
 
-    # Build SSH command - use 'reboot' to restart the entire server
+    try:
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return False, "Command timed out"
+    except Exception as e:
+        return False, str(e)
+
+
+def restart_containers(host: str) -> bool:
+    """Restart Docker containers on remote host."""
+    print(f"[RESTART] Restarting containers on {host}...")
+
+    success, output = run_ssh_command(
+        host,
+        "cd /srv/abstractfinance && docker compose restart trading-engine ibgateway"
+    )
+
+    if success:
+        print(f"[RESTART] Containers restarted successfully on {host}")
+    else:
+        print(f"[RESTART] Failed to restart containers: {output}")
+
+    return success
+
+
+def reboot_server(host: str) -> bool:
+    """Reboot the entire remote server."""
+    print(f"[REBOOT] Rebooting server {host}...")
+
+    # Send reboot command - connection will be closed
     ssh_cmd = [
         "ssh",
         "-i", SSH_KEY_PATH,
@@ -78,32 +122,17 @@ def reboot_remote_server(host: str) -> bool:
     ]
 
     try:
-        result = subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120  # 2 minute timeout for restart
-        )
-
-        # Reboot command may return non-zero or close connection - that's expected
+        subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
         print(f"[REBOOT] Reboot command sent to {host}")
         return True
-
-    except subprocess.TimeoutExpired:
-        # Timeout is expected - server is rebooting
-        print(f"[REBOOT] Server {host} is rebooting (connection closed)")
+    except:
+        # Connection reset/timeout is expected during reboot
+        print(f"[REBOOT] Server {host} is rebooting")
         return True
-    except Exception as e:
-        # Connection reset is expected during reboot
-        if "Connection reset" in str(e) or "closed by remote" in str(e):
-            print(f"[REBOOT] Server {host} is rebooting")
-            return True
-        print(f"[REBOOT] Exception while rebooting: {e}")
-        return False
 
 
 def run_monitor():
-    """Main monitoring loop with auto-remediation."""
+    """Main monitoring loop with graduated auto-remediation."""
     if not TARGET_URL:
         print("ERROR: MONITOR_TARGET_URL environment variable not set")
         sys.exit(1)
@@ -112,17 +141,19 @@ def run_monitor():
         print("ERROR: MONITOR_TARGET_HOST environment variable not set")
         sys.exit(1)
 
-    print(f"Cross-monitor with auto-remediation started")
+    print(f"Cross-monitor with graduated auto-remediation started")
     print(f"  Target: {TARGET_NAME}")
     print(f"  Health URL: {TARGET_URL}")
     print(f"  SSH Host: {TARGET_HOST}")
     print(f"  Check interval: {CHECK_INTERVAL}s")
-    print(f"  Failures before restart: {FAILURES_BEFORE_RESTART}")
-    print(f"  Restart cooldown: {RESTART_COOLDOWN}s")
+    print(f"  Failures before container restart: {FAILURES_BEFORE_CONTAINER_RESTART}")
+    print(f"  Failures before server reboot: {FAILURES_BEFORE_SERVER_REBOOT}")
+    print(f"  Action cooldown: {ACTION_COOLDOWN}s")
     print()
 
     consecutive_failures = 0
-    last_restart_time = 0
+    last_action_time = 0
+    container_restart_attempted = False
     last_status = None
 
     while True:
@@ -133,30 +164,51 @@ def run_monitor():
             if result["healthy"]:
                 status_str = f"OK ({result['latency_ms']}ms)"
                 consecutive_failures = 0
+                container_restart_attempted = False  # Reset escalation
             else:
                 consecutive_failures += 1
                 status_str = f"FAIL #{consecutive_failures} ({result.get('error', 'Unknown')})"
 
-                # Check if we should attempt a restart
-                time_since_last_restart = now - last_restart_time
-                can_restart = time_since_last_restart >= RESTART_COOLDOWN
+                # Check cooldown
+                time_since_last_action = now - last_action_time
+                can_act = time_since_last_action >= ACTION_COOLDOWN
 
-                if consecutive_failures >= FAILURES_BEFORE_RESTART:
-                    if can_restart:
-                        print(f"[{result['timestamp']}] {consecutive_failures} consecutive failures - triggering SERVER REBOOT")
-
-                        if reboot_remote_server(TARGET_HOST):
-                            last_restart_time = now
-                            consecutive_failures = 0  # Reset after reboot
-                            # Wait for server to come back up (reboot takes longer)
-                            print(f"[REBOOT] Waiting 180s for server to reboot and services to start...")
+                # Escalation Level 2: Server reboot (if container restart didn't help)
+                if consecutive_failures >= FAILURES_BEFORE_SERVER_REBOOT and container_restart_attempted:
+                    if can_act:
+                        print(f"[{result['timestamp']}] {consecutive_failures} failures after container restart - REBOOTING SERVER")
+                        if reboot_server(TARGET_HOST):
+                            last_action_time = now
+                            consecutive_failures = 0
+                            container_restart_attempted = False
+                            print(f"[REBOOT] Waiting 180s for server to come back up...")
                             time.sleep(180)
                         else:
-                            print(f"[REBOOT] Reboot failed, will retry after cooldown")
-                            last_restart_time = now  # Still apply cooldown
+                            last_action_time = now
                     else:
-                        remaining = int(RESTART_COOLDOWN - time_since_last_restart)
-                        print(f"[{result['timestamp']}] {status_str} (restart cooldown: {remaining}s remaining)")
+                        remaining = int(ACTION_COOLDOWN - time_since_last_action)
+                        print(f"[{result['timestamp']}] {status_str} (cooldown: {remaining}s)")
+                        time.sleep(CHECK_INTERVAL)
+                        continue
+
+                # Escalation Level 1: Container restart
+                elif consecutive_failures >= FAILURES_BEFORE_CONTAINER_RESTART and not container_restart_attempted:
+                    if can_act:
+                        print(f"[{result['timestamp']}] {consecutive_failures} failures - RESTARTING CONTAINERS")
+                        if restart_containers(TARGET_HOST):
+                            last_action_time = now
+                            consecutive_failures = 0
+                            container_restart_attempted = True  # Mark that we tried this
+                            print(f"[RESTART] Waiting 90s for containers to start...")
+                            time.sleep(90)
+                        else:
+                            # Container restart failed, escalate to reboot next time
+                            container_restart_attempted = True
+                            last_action_time = now
+                    else:
+                        remaining = int(ACTION_COOLDOWN - time_since_last_action)
+                        print(f"[{result['timestamp']}] {status_str} (cooldown: {remaining}s)")
+                        time.sleep(CHECK_INTERVAL)
                         continue
 
             # Log status
