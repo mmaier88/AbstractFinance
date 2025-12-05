@@ -529,7 +529,7 @@ def get_default_eu_universe() -> List[str]:
         'BAS.DE', 'BAYN.DE',  # Chemicals/Pharma
         'SIE.DE', 'IFX.DE',  # Industrials
         'DBK.DE', 'CBK.DE',  # Banks
-        'DTE.DE', 'DPW.DE',  # Telecoms/Logistics
+        'DTE.DE', 'DHL.DE',  # Telecoms/Logistics (DHL Group, formerly Deutsche Post)
         'RWE.DE', 'EOAN.DE',  # Utilities
         # French stocks
         'BNP.PA', 'GLE.PA', 'ACA.PA',  # Banks
