@@ -226,7 +226,8 @@ class Strategy:
     ) -> SleeveTargets:
         """
         Build Core Index RV sleeve targets.
-        Long US (ES/SPY) vs Short EU (FESX/FEZ), FX-hedged.
+        Long US (CSPX) vs Short EU (CS51), FX-hedged.
+        Using UCITS ETFs for EU PRIIPs/KID compliance.
         """
         target_weight = self.sleeve_weights[Sleeve.CORE_INDEX_RV]
         target_notional = nav * target_weight * scaling
@@ -236,21 +237,21 @@ class Strategy:
         targets = {}
 
         try:
-            # US Long Leg - use ETF for simplicity
-            spy_price = data_feed.get_last_price('SPY')
-            spy_qty = int(notional_per_leg / spy_price)
-            if spy_qty > 0:
-                targets['us_index_etf'] = spy_qty
+            # US Long Leg - use UCITS ETF (CSPX on LSE)
+            cspx_price = data_feed.get_last_price('CSPX')
+            cspx_qty = int(notional_per_leg / cspx_price)
+            if cspx_qty > 0:
+                targets['us_index_etf'] = cspx_qty
 
-            # EU Short Leg
-            fez_price = data_feed.get_last_price('FEZ')
-            fez_qty = int(notional_per_leg / fez_price)
-            if fez_qty > 0:
-                targets['eu_index_etf'] = -fez_qty  # Negative for short
+            # EU Short Leg - use UCITS ETF (CS51 on XETRA)
+            cs51_price = data_feed.get_last_price('CS51')
+            cs51_qty = int(notional_per_leg / cs51_price)
+            if cs51_qty > 0:
+                targets['eu_index_etf'] = -cs51_qty  # Negative for short
 
-            # FX Hedge - hedge EUR exposure from short FESX/FEZ
+            # FX Hedge - hedge EUR exposure from short EU leg
             # Short EUR to hedge the EUR notional of the short EU leg
-            eur_notional = abs(fez_qty * fez_price) if fez_qty else 0
+            eur_notional = abs(cs51_qty * cs51_price) if cs51_qty else 0
 
             # Use micro futures for better sizing
             # M6E = 12,500 EUR per contract
@@ -261,8 +262,8 @@ class Strategy:
 
         except Exception as e:
             # Fallback to smaller position
-            targets['us_index_etf'] = int(notional_per_leg / 500)  # Assume ~$500 SPY
-            targets['eu_index_etf'] = -int(notional_per_leg / 50)  # Assume ~$50 FEZ
+            targets['us_index_etf'] = int(notional_per_leg / 500)  # Assume ~$500 CSPX
+            targets['eu_index_etf'] = -int(notional_per_leg / 50)  # Assume ~$50 CS51
 
         return SleeveTargets(
             sleeve=Sleeve.CORE_INDEX_RV,
@@ -291,7 +292,8 @@ class Strategy:
         targets = {}
 
         # US Long Basket - equal weight across tech/healthcare/quality
-        us_etfs = ['XLK', 'QQQ', 'SMH', 'XLV', 'QUAL']
+        # Using UCITS ETFs for EU PRIIPs/KID compliance
+        us_etfs = ['IUIT', 'CNDX', 'SEMI', 'IUHC', 'IUQA']
         us_weight_each = notional_per_leg / len(us_etfs)
 
         for etf in us_etfs:
@@ -307,7 +309,8 @@ class Strategy:
                 continue
 
         # EU Short Basket - financials and broad Europe
-        eu_etfs = ['EUFN', 'EWG', 'EWU']
+        # Using UCITS ETFs for EU PRIIPs/KID compliance
+        eu_etfs = ['EXV1', 'EXS1', 'IUKD']
         eu_weight_each = notional_per_leg / len(eu_etfs)
 
         for etf in eu_etfs:
@@ -400,9 +403,9 @@ class Strategy:
                 except Exception:
                     continue
         else:
-            # Fallback: Use EUFN ETF as proxy for EU shorts if no individual shorts
+            # Fallback: Use EXV1 ETF (UCITS) as proxy for EU shorts if no individual shorts
             try:
-                price = data_feed.get_last_price('EUFN')
+                price = data_feed.get_last_price('EXV1')
                 qty = int(notional_per_leg / price)
                 if qty > 0:
                     targets['financials_eufn_single'] = -qty
@@ -428,6 +431,7 @@ class Strategy:
         """
         Build Credit & Carry sleeve targets.
         Long US credit, underweight/short EU credit.
+        Using UCITS ETFs for EU PRIIPs/KID compliance.
         """
         target_weight = self.sleeve_weights[Sleeve.CREDIT_CARRY]
         target_notional = nav * target_weight * scaling
@@ -435,12 +439,13 @@ class Strategy:
         targets = {}
 
         # US Credit Long (70% of sleeve)
+        # Using UCITS ETFs for EU PRIIPs/KID compliance
         us_notional = target_notional * 0.7
         us_credit_etfs = {
-            'LQD': 0.40,   # IG
-            'HYG': 0.25,   # HY
-            'BKLN': 0.20,  # Loans
-            'ARCC': 0.15   # BDC
+            'LQDE': 0.40,   # IG (UCITS)
+            'IHYU': 0.25,   # HY (UCITS)
+            'FLOT': 0.20,   # Floating Rate (UCITS)
+            'ARCC': 0.15    # BDC (individual stock, no KID needed)
         }
 
         for etf, weight in us_credit_etfs.items():
@@ -456,11 +461,11 @@ class Strategy:
 
         # EU Credit Short (30% of sleeve)
         eu_notional = target_notional * 0.3
-        # Using US-listed EU credit ETFs for easier shorting
+        # Using UCITS ETF for EU credit short exposure
         try:
-            # Short EU HY via proxy
-            hyg_price = data_feed.get_last_price('HYG')
-            eu_short_qty = int(eu_notional / hyg_price)
+            # Short EU HY via IHYG (UCITS)
+            ihyg_price = data_feed.get_last_price('IHYG')
+            eu_short_qty = int(eu_notional / ihyg_price)
             # Instead of actual EU credit short, reduce US credit exposure
             # This is a simplification - in production would short actual EU credit
         except Exception:
@@ -505,28 +510,36 @@ class Strategy:
         )
 
     def _etf_to_instrument_id(self, etf_symbol: str) -> Optional[str]:
-        """Map ETF symbol to instrument ID in config."""
+        """Map ETF symbol to instrument ID in config.
+        Updated for EU PRIIPs/KID compliance using UCITS ETFs.
+        """
         mapping = {
-            'SPY': 'us_index_etf',
-            'FEZ': 'eu_index_etf',
-            'IEUR': 'eu_broad_etf',
-            'XLK': 'tech_xlk',
-            'QQQ': 'tech_qqq',
-            'IGV': 'tech_igv',
-            'SMH': 'tech_smh',
-            'XLV': 'health_xlv',
-            'XBI': 'health_xbi',
-            'IBB': 'health_ibb',
-            'QUAL': 'factor_qual',
-            'MTUM': 'factor_mtum',
-            'EUFN': 'financials_eufn',
-            'EWU': 'value_ewu',
-            'EWG': 'value_ewg',
-            'LQD': 'ig_lqd',
-            'HYG': 'hy_hyg',
-            'JNK': 'hy_jnk',
-            'BKLN': 'loans_bkln',
-            'SRLN': 'loans_srln',
+            # US Index - UCITS
+            'CSPX': 'us_index_etf',
+            # EU Index - UCITS
+            'CS51': 'eu_index_etf',
+            'SMEA': 'eu_broad_etf',
+            # US Sectors - UCITS
+            'IUIT': 'tech_xlk',
+            'CNDX': 'tech_qqq',
+            'WTCH': 'tech_igv',
+            'SEMI': 'tech_smh',
+            'IUHC': 'health_xlv',
+            'SBIO': 'health_xbi',
+            'BTEK': 'health_ibb',
+            'IUQA': 'factor_qual',
+            'IUMO': 'factor_mtum',
+            # EU Sectors - UCITS
+            'EXV1': 'financials_eufn',
+            'IUKD': 'value_ewu',
+            'EXS1': 'value_ewg',
+            # Credit - UCITS
+            'LQDE': 'ig_lqd',
+            'IHYU': 'hy_hyg',
+            'HYLD': 'hy_jnk',
+            'FLOT': 'loans_bkln',
+            'FLOA': 'loans_srln',
+            # BDCs - Individual stocks (no KID required)
             'ARCC': 'bdc_arcc',
             'MAIN': 'bdc_main'
         }

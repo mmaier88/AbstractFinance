@@ -1,5 +1,6 @@
 # AbstractFinance - Instrument Configuration
 # All instruments must be IBKR-tradable
+# Updated for EU PRIIPs/KID compliance - using UCITS ETFs on European exchanges
 
 equity_indices:
   # US Index Instruments
@@ -12,12 +13,12 @@ equity_indices:
     description: "E-mini S&P 500 Future"
 
   us_index_etf:
-    symbol: "SPY"
-    exchange: "ARCA"
+    symbol: "CSPX"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
     multiplier: 1.0
-    description: "SPDR S&P 500 ETF"
+    description: "iShares Core S&P 500 UCITS ETF (USD)"
 
   us_index_micro:
     symbol: "MES"
@@ -37,20 +38,20 @@ equity_indices:
     description: "Euro STOXX 50 Future"
 
   eu_index_etf:
-    symbol: "FEZ"
-    exchange: "ARCA"
+    symbol: "CS51"
+    exchange: "XETRA"
     sec_type: "STK"
-    currency: "USD"
+    currency: "EUR"
     multiplier: 1.0
-    description: "SPDR Euro STOXX 50 ETF"
+    description: "iShares Core Euro STOXX 50 UCITS ETF"
 
   eu_broad_etf:
-    symbol: "IEUR"
-    exchange: "ARCA"
+    symbol: "SMEA"
+    exchange: "LSE"
     sec_type: "STK"
-    currency: "USD"
+    currency: "GBP"
     multiplier: 1.0
-    description: "iShares Core MSCI Europe ETF"
+    description: "iShares Core MSCI Europe UCITS ETF"
 
 fx:
   # EUR/USD Hedging
@@ -79,150 +80,151 @@ fx:
     description: "EUR.USD Spot FX"
 
 sectors_us:
-  # Technology
+  # Technology - UCITS compliant
   tech_xlk:
-    symbol: "XLK"
-    exchange: "ARCA"
+    symbol: "IUIT"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "Technology Select Sector SPDR"
+    description: "iShares S&P 500 IT Sector UCITS ETF"
 
   tech_qqq:
-    symbol: "QQQ"
-    exchange: "NASDAQ"
+    symbol: "CNDX"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "Invesco QQQ Trust"
+    description: "iShares NASDAQ 100 UCITS ETF"
 
   tech_igv:
-    symbol: "IGV"
-    exchange: "ARCA"
+    symbol: "WTCH"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares Expanded Tech-Software ETF"
+    description: "WisdomTree Cloud Computing UCITS ETF"
 
   tech_smh:
-    symbol: "SMH"
-    exchange: "ARCA"
+    symbol: "SEMI"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "VanEck Semiconductor ETF"
+    description: "VanEck Semiconductor UCITS ETF"
 
-  # Healthcare
+  # Healthcare - UCITS compliant
   health_xlv:
-    symbol: "XLV"
-    exchange: "ARCA"
+    symbol: "IUHC"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "Health Care Select Sector SPDR"
+    description: "iShares S&P 500 Health Care Sector UCITS ETF"
 
   health_xbi:
-    symbol: "XBI"
-    exchange: "ARCA"
+    symbol: "SBIO"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "SPDR S&P Biotech ETF"
+    description: "Invesco NASDAQ Biotech UCITS ETF"
 
   health_ibb:
-    symbol: "IBB"
-    exchange: "NASDAQ"
+    symbol: "BTEK"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares Biotechnology ETF"
+    description: "iShares Nasdaq US Biotechnology UCITS ETF"
 
-  # Quality/Momentum Factors
+  # Quality/Momentum Factors - UCITS compliant
   factor_qual:
-    symbol: "QUAL"
-    exchange: "ARCA"
+    symbol: "IUQA"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares MSCI USA Quality Factor ETF"
+    description: "iShares Edge MSCI USA Quality Factor UCITS ETF"
 
   factor_mtum:
-    symbol: "MTUM"
-    exchange: "ARCA"
+    symbol: "IUMO"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares MSCI USA Momentum Factor ETF"
+    description: "iShares Edge MSCI USA Momentum Factor UCITS ETF"
 
 sectors_eu:
-  # European Financials
+  # European Financials - UCITS compliant
   financials_eufn:
-    symbol: "EUFN"
-    exchange: "ARCA"
+    symbol: "EXV1"
+    exchange: "XETRA"
     sec_type: "STK"
-    currency: "USD"
-    description: "iShares MSCI Europe Financials ETF"
+    currency: "EUR"
+    description: "iShares STOXX Europe 600 Banks UCITS ETF"
 
-  # Broad Europe
+  # Broad Europe - UCITS compliant
   broad_fez:
-    symbol: "FEZ"
-    exchange: "ARCA"
+    symbol: "CS51"
+    exchange: "XETRA"
     sec_type: "STK"
-    currency: "USD"
-    description: "SPDR Euro STOXX 50 ETF"
+    currency: "EUR"
+    description: "iShares Core Euro STOXX 50 UCITS ETF"
 
   broad_ieur:
-    symbol: "IEUR"
-    exchange: "ARCA"
+    symbol: "SMEA"
+    exchange: "LSE"
     sec_type: "STK"
-    currency: "USD"
-    description: "iShares Core MSCI Europe ETF"
+    currency: "GBP"
+    description: "iShares Core MSCI Europe UCITS ETF"
 
-  # European Value (overweight old economy)
+  # European Value (overweight old economy) - UCITS compliant
   value_ewu:
-    symbol: "EWU"
-    exchange: "ARCA"
+    symbol: "IUKD"
+    exchange: "LSE"
     sec_type: "STK"
-    currency: "USD"
-    description: "iShares MSCI United Kingdom ETF"
+    currency: "GBP"
+    description: "iShares UK Dividend UCITS ETF"
 
   value_ewg:
-    symbol: "EWG"
-    exchange: "ARCA"
+    symbol: "EXS1"
+    exchange: "XETRA"
     sec_type: "STK"
-    currency: "USD"
-    description: "iShares MSCI Germany ETF"
+    currency: "EUR"
+    description: "iShares Core DAX UCITS ETF"
 
 credit_us:
-  # Investment Grade
+  # Investment Grade - UCITS compliant
   ig_lqd:
-    symbol: "LQD"
-    exchange: "ARCA"
+    symbol: "LQDE"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares iBoxx $ Investment Grade Corporate Bond ETF"
+    description: "iShares $ Corp Bond UCITS ETF"
 
-  # High Yield
+  # High Yield - UCITS compliant
   hy_hyg:
-    symbol: "HYG"
-    exchange: "ARCA"
+    symbol: "IHYU"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "iShares iBoxx $ High Yield Corporate Bond ETF"
+    description: "iShares $ High Yield Corp Bond UCITS ETF"
 
   hy_jnk:
-    symbol: "JNK"
-    exchange: "ARCA"
+    symbol: "HYLD"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "SPDR Bloomberg High Yield Bond ETF"
+    description: "iShares $ High Yield Corp Bond ESG UCITS ETF"
 
-  # Loans/BDCs
+  # Loans/BDCs - Using stocks (no KID required for individual stocks)
   loans_bkln:
-    symbol: "BKLN"
-    exchange: "ARCA"
+    symbol: "FLOT"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "Invesco Senior Loan ETF"
+    description: "iShares $ Floating Rate Bond UCITS ETF"
 
   loans_srln:
-    symbol: "SRLN"
-    exchange: "ARCA"
+    symbol: "FLOA"
+    exchange: "LSE"
     sec_type: "STK"
     currency: "USD"
-    description: "SPDR Blackstone Senior Loan ETF"
+    description: "iShares $ Ultrashort Bond UCITS ETF"
 
+  # BDCs - These are individual stocks (no KID required)
   bdc_arcc:
     symbol: "ARCC"
     exchange: "NASDAQ"
