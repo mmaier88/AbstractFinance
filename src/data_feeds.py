@@ -40,16 +40,19 @@ class DataFeed:
 
     # Mapping from internal symbols to yfinance tickers
     YFINANCE_MAPPING = {
+        # US Futures - use index proxies
         "ES": "^GSPC",      # S&P 500 index as proxy for ES
         "MES": "^GSPC",
-        "SPY": "SPY",
         "FESX": "^STOXX50E",  # Euro STOXX 50
-        "FEZ": "FEZ",
-        "IEUR": "IEUR",
         "6E": "EURUSD=X",
         "M6E": "EURUSD=X",
         "VIX": "^VIX",
         "VX": "^VIX",
+
+        # US ETFs (legacy - kept for backwards compatibility)
+        "SPY": "SPY",
+        "FEZ": "FEZ",
+        "IEUR": "IEUR",
         "XLK": "XLK",
         "QQQ": "QQQ",
         "IGV": "IGV",
@@ -67,11 +70,40 @@ class DataFeed:
         "JNK": "JNK",
         "BKLN": "BKLN",
         "SRLN": "SRLN",
+
+        # UCITS ETFs on LSE (add .L suffix for yfinance)
+        "CSPX": "CSPX.L",   # iShares Core S&P 500 UCITS
+        "CNDX": "CNDX.L",   # iShares NASDAQ 100 UCITS
+        "IUIT": "IUIT.L",   # iShares S&P 500 IT Sector UCITS
+        "WTCH": "WTCH.L",   # WisdomTree Cloud Computing UCITS
+        "SEMI": "SEMI.L",   # VanEck Semiconductor UCITS
+        "IUHC": "IUHC.L",   # iShares S&P 500 Health Care UCITS
+        "SBIO": "SBIO.L",   # Invesco NASDAQ Biotech UCITS
+        "BTEK": "BTEK.L",   # iShares Nasdaq US Biotechnology UCITS
+        "IUQA": "IUQA.L",   # iShares Edge MSCI USA Quality UCITS
+        "IUMO": "IUMO.L",   # iShares Edge MSCI USA Momentum UCITS
+        "SMEA": "SMEA.L",   # iShares Core MSCI Europe UCITS
+        "IUKD": "IUKD.L",   # iShares UK Dividend UCITS
+        "LQDE": "LQDE.L",   # iShares $ Corp Bond UCITS
+        "IHYU": "IHYU.L",   # iShares $ High Yield Corp Bond UCITS
+        "HYLD": "HYLD.L",   # iShares $ High Yield Corp Bond ESG UCITS
+        "FLOT": "FLOT.L",   # iShares $ Floating Rate Bond UCITS
+        "FLOA": "FLOA.L",   # iShares $ Ultrashort Bond UCITS
+        "IHYG": "IHYG.L",   # iShares EUR High Yield Corp Bond UCITS
+
+        # UCITS ETFs on XETRA (add .DE suffix for yfinance)
+        "CS51": "CS51.DE",  # iShares Core Euro STOXX 50 UCITS
+        "EXV1": "EXV1.DE",  # iShares STOXX Europe 600 Banks UCITS
+        "EXS1": "EXS1.DE",  # iShares Core DAX UCITS
+
+        # Individual stocks (no suffix needed)
         "ARCC": "ARCC",
         "MAIN": "MAIN",
-        "FGBL": "^TNX",     # Approximation with 10Y Treasury
-        "FOAT": "^TNX",     # Approximation
-        "FBTP": "^TNX",     # Approximation
+
+        # Bond futures - approximation with 10Y Treasury
+        "FGBL": "^TNX",
+        "FOAT": "^TNX",
+        "FBTP": "^TNX",
     }
 
     def __init__(
