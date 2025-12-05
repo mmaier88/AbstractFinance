@@ -91,8 +91,8 @@ class DataFeed:
         "FLOA": "FLOA.L",   # iShares $ Ultrashort Bond UCITS
         "IHYG": "IHYG.L",   # iShares EUR High Yield Corp Bond UCITS
 
-        # UCITS ETFs on XETRA (add .DE suffix for yfinance)
-        "CS51": "CS51.DE",  # iShares Core Euro STOXX 50 UCITS
+        # UCITS ETFs on XETRA (Yahoo Finance uses different tickers)
+        "CS51": "SXRT.DE",  # iShares Core Euro STOXX 50 UCITS (IBKR: CS51 -> YF: SXRT.DE)
         "EXV1": "EXV1.DE",  # iShares STOXX Europe 600 Banks UCITS
         "EXS1": "EXS1.DE",  # iShares Core DAX UCITS
 
