@@ -164,10 +164,25 @@ class DataFeed:
         spec = self._instruments[instrument_id]
 
         if spec.sec_type == "STK":
+            # For European exchanges, use SMART routing with primaryExchange
+            if spec.exchange in ('LSE', 'XETRA', 'SBF', 'IBIS'):
+                return Stock(spec.symbol, 'SMART', spec.currency, primaryExchange=spec.exchange)
             return Stock(spec.symbol, spec.exchange, spec.currency)
         elif spec.sec_type == "FUT":
             # For futures, we need to specify expiry - use front month
-            return Future(spec.symbol, exchange=spec.exchange)
+            from datetime import date
+            today = date.today()
+            if today.day > 15:
+                month = today.month + 1
+                year = today.year
+                if month > 12:
+                    month = 1
+                    year += 1
+            else:
+                month = today.month
+                year = today.year
+            expiry = f"{year}{month:02d}"
+            return Future(spec.symbol, exchange=spec.exchange, lastTradeDateOrContractMonth=expiry)
         elif spec.sec_type == "CASH":
             return Forex(spec.symbol + spec.currency)
         elif spec.sec_type == "OPT":

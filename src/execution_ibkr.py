@@ -280,10 +280,28 @@ class IBClient:
         currency = spec.get('currency', 'USD')
 
         if sec_type == 'STK':
-            contract = Stock(symbol, exchange, currency)
+            # For European exchanges (LSE, XETRA), use SMART routing with primaryExchange
+            if exchange in ('LSE', 'XETRA', 'SBF', 'IBIS'):
+                contract = Stock(symbol, 'SMART', currency, primaryExchange=exchange)
+            else:
+                contract = Stock(symbol, exchange, currency)
 
         elif sec_type == 'FUT':
-            contract = Future(symbol, exchange=exchange)
+            # Calculate front month expiry (YYYYMM format)
+            from datetime import date
+            today = date.today()
+            # Use next month if we're past the 15th, otherwise current month
+            if today.day > 15:
+                month = today.month + 1
+                year = today.year
+                if month > 12:
+                    month = 1
+                    year += 1
+            else:
+                month = today.month
+                year = today.year
+            expiry = f"{year}{month:02d}"
+            contract = Future(symbol, exchange=exchange, lastTradeDateOrContractMonth=expiry)
 
         elif sec_type == 'CASH':
             # Forex
