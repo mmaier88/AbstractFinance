@@ -1,5 +1,7 @@
 # AbstractFinance - European Decline Macro Fund
 
+> **📋 THIS README IS THE SOURCE OF TRUTH** for all configuration, deployment, and operational documentation. All other docs are supplementary.
+
 A production-grade automated trading system implementing a multi-sleeve macro hedge fund strategy expressing a structural view on US vs European economic performance.
 
 ## Strategy Overview
@@ -213,33 +215,169 @@ Defines all tradeable instruments. All instruments must be IBKR-executable:
 - **Volatility**: VIX options, VX futures
 - **Sovereign**: FOAT, FGBL futures
 
-## IB Gateway Setup
+## IB Gateway Setup (IBGA - Headless 2FA)
+
+> **IMPORTANT**: This system uses [IBGA (heshiming/ibga)](https://heshiming.github.io/ibga/) for fully automated headless IB Gateway with TOTP 2FA support. No manual phone taps required!
+
+### How IBGA Works
+
+IBGA automates the entire IB Gateway login process:
+1. Launches IB Gateway in a virtual X display (Xvfb)
+2. Automatically fills in username and password
+3. Detects 2FA prompt and generates TOTP code using `oathtool`
+4. Enters the 6-digit code and clicks OK
+5. Configures API settings (port, logging, etc.)
+6. Exposes API on port 4000 via socat proxy
+
+### Required Environment Variables
+
+Add these to your `.env` file on the server:
+
+```bash
+# IBKR Credentials (REQUIRED)
+IBKR_USERNAME=your_username          # IBKR username
+IBKR_PASSWORD=your_password          # IBKR password
+IBKR_TOTP_KEY=YOUR32CHARBASE32KEY   # TOTP secret from Mobile Authenticator setup
+
+# Trading Mode
+TRADING_MODE=paper                   # "paper" or "live"
+```
+
+### Getting Your TOTP Key
+
+The TOTP key is a 32-character Base32 secret obtained when setting up Mobile Authenticator:
+
+1. Log into IBKR Account Management
+2. Go to **Settings → Security → Secure Login System**
+3. Enable **Mobile Authenticator** (IB Key app)
+4. When shown the QR code, click "Can't scan?" to reveal the secret key
+5. Copy the 32-character secret (e.g., `OCX4MH5ZPKBNEGZ3A7YQP6KTHYTUDBFT`)
+6. Save this as `IBKR_TOTP_KEY` in your `.env` file
+
+**Note**: You can verify your TOTP key works with:
+```bash
+oathtool --base32 --totp "YOUR32CHARBASE32KEY"
+```
+
+### Docker Compose Configuration
+
+The `docker-compose.yml` configures IBGA with these key settings:
+
+```yaml
+ibgateway:
+  image: heshiming/ibga:latest
+  environment:
+    - IB_USERNAME=${IBKR_USERNAME}
+    - IB_PASSWORD=${IBKR_PASSWORD}
+    - TOTP_KEY=${IBKR_TOTP_KEY}
+    - IB_REGION=europe
+    - IB_TIMEZONE=Europe/Berlin
+    - IB_LOGINTAB=IB API           # IMPORTANT: Use "IB API", NOT "FIX CTCI"
+    - IB_LOGINTYPE=${TRADING_MODE:-paper}
+    - IB_LOGOFF=11:55 PM Europe/Berlin
+    - IB_APILOG=data
+    - IB_LOGLEVEL=INFO
+  ports:
+    - "4000:4000"    # IBGA API port (socat proxy to internal port 9000)
+    - "5900:5900"    # VNC for debugging
+    - "6080:5800"    # noVNC web interface
+  volumes:
+    - ibgateway-data:/home/ibg
+    - ibgateway-settings:/home/ibg_settings  # Persists login state
+```
+
+### Port Configuration
+
+| External Port | Internal Port | Purpose |
+|--------------|---------------|---------|
+| 4000 | 4000 | IB Gateway API (socat → 9000) |
+| 5900 | 5900 | VNC server (for debugging) |
+| 6080 | 5800 | noVNC web interface |
+
+**Trading Engine connects to**: `ibgateway:4000` (inside Docker network)
+
+### Debugging via noVNC
+
+If login fails, connect to noVNC to see the IB Gateway GUI:
+
+```
+http://<server-ip>:6080/vnc.html
+```
+
+Common issues visible in noVNC:
+- **"Order routing login failed"**: Wrong credentials or wrong login tab
+- **Black screen**: Container restarting, wait for it to stabilize
+- **2FA prompt stuck**: TOTP key incorrect or clock sync issue
 
 ### Hetzner Server Setup
 
 ```bash
 # Install dependencies
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-venv python3-pip git tmux default-jre
+sudo apt install -y python3 python3-venv python3-pip git tmux
 
 # Install Docker
 curl -fsSL https://get.docker.com | sudo bash
 sudo usermod -aG docker $(whoami)
 
 # Clone and setup
-git clone https://github.com/yourusername/AbstractFinance.git /srv/abstractfinance
+git clone https://github.com/mmaier88/AbstractFinance.git /srv/abstractfinance
 cd /srv/abstractfinance
-cp config/credentials.env.template .env
+
+# Configure credentials
+nano .env
+# Add: IBKR_USERNAME, IBKR_PASSWORD, IBKR_TOTP_KEY, TRADING_MODE, etc.
+
+# Start services
+docker compose up -d
 ```
 
-### IB Gateway Configuration
+### Verifying Connection
 
-The system uses the [gnzsnz/ib-gateway](https://github.com/gnzsnz/ib-gateway) Docker image for headless IB Gateway:
+After startup, verify IB Gateway is connected:
 
-- **Paper trading port**: 4002
-- **Live trading port**: 4001
-- Automatic daily restarts
-- Automatic reconnection
+```bash
+# Check logs for successful login
+docker logs ibgateway | grep -E "TOTP|connected|welcome"
+
+# Test API connection
+docker exec trading-engine python3 -c "
+from ib_insync import IB
+ib = IB()
+ib.connect('ibgateway', 4000, clientId=99, timeout=10)
+print('Connected! Accounts:', ib.managedAccounts())
+ib.disconnect()
+"
+```
+
+Expected output:
+```
+Connected! Accounts: ['U12345678']
+```
+
+### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "Order routing login failed" | Wrong login tab (FIX CTCI) | Ensure `IB_LOGINTAB=IB API` |
+| "Not able to wait for connect request on port 4000" | Port conflict | Restart container: `docker compose restart ibgateway` |
+| TOTP not entered | Wrong TOTP key | Verify key with `oathtool --base32 --totp "KEY"` |
+| Black screen in noVNC | Container starting | Wait 60s, check `docker logs ibgateway` |
+| Connection refused on 4002 | Wrong port | Use port 4000, not 4001/4002 |
+
+### Volume Persistence
+
+The `ibgateway-settings` volume preserves:
+- Login form state (skips timezone selection on restart)
+- API configuration (port, logging settings)
+- Option check skip flag
+
+To reset and reconfigure from scratch:
+```bash
+docker compose down
+docker volume rm abstractfinance_ibgateway-settings
+docker compose up -d ibgateway
+```
 
 ## Risk Management
 
@@ -320,10 +458,12 @@ Sent via Telegram/email:
 
 ### Server Architecture
 
-| Server | IP | Type | Purpose |
-|--------|-----|------|---------|
-| Staging | 94.130.228.55 | CX33 | Paper trading, testing |
-| Production | 91.99.116.196 | CX43 | Live trading |
+| Server | IP | Type | Purpose | noVNC |
+|--------|-----|------|---------|-------|
+| Staging | 94.130.228.55 | CX33 | Paper trading, testing | http://94.130.228.55:6080/vnc.html |
+| Production | 91.99.116.196 | CX43 | Live trading | http://91.99.116.196:6080/vnc.html |
+
+**Current Account**: U23203300 (abstractbot)
 
 ## Development
 
