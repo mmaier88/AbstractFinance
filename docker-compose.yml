@@ -98,9 +98,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # Prometheus Metrics
+  # Prometheus Metrics (pinned version for stability)
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.54.1
     container_name: prometheus
     restart: always
     volumes:
@@ -115,9 +115,9 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
 
-  # Grafana Dashboard
+  # Grafana Dashboard (pinned version for stability)
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.3.0
     container_name: grafana
     restart: always
     environment:
@@ -135,9 +135,9 @@ services:
       - prometheus
       - loki
 
-  # Loki Log Aggregation
+  # Loki Log Aggregation (pinned version for stability)
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.2.0
     container_name: loki
     restart: always
     volumes:
@@ -149,9 +149,9 @@ services:
       - trading-network
     command: -config.file=/etc/loki/local-config.yaml
 
-  # Promtail Log Collector
+  # Promtail Log Collector (pinned version - must match Loki)
   promtail:
-    image: grafana/promtail:latest
+    image: grafana/promtail:3.2.0
     container_name: promtail
     restart: always
     volumes:

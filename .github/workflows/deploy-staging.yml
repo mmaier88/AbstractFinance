@@ -16,7 +16,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.STAGING_HOST }}
-          username: root
+          username: abstractfinance
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
             cd /srv/abstractfinance
@@ -24,15 +24,15 @@ jobs:
             # Pull latest code
             git pull origin main
 
-            # Pull latest Docker images
+            # Pull pinned Docker images
             docker compose pull
 
             # Rebuild and restart services (including cross-monitor)
             docker compose -f docker-compose.yml -f docker-compose.staging.yml build trading-engine cross-monitor
             docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
 
-            # Health check
-            sleep 30
+            # Health check - wait for IBGA headless 2FA
+            sleep 60
             docker compose ps
             docker compose logs --tail=50 trading-engine
 

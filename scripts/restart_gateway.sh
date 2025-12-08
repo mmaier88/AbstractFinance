@@ -1,6 +1,10 @@
 #!/bin/bash
 # IB Gateway scheduled restart script
 # Run via cron: 0 22 * * 0 root /srv/abstractfinance/scripts/restart_gateway.sh
+#
+# This script leverages IBGA (heshiming/ibga) for fully automated restarts.
+# IBGA handles TOTP 2FA automatically using the IBKR_TOTP_KEY environment variable.
+# No manual intervention required - the entire restart is headless.
 
 set -e
 
@@ -43,13 +47,18 @@ sleep 10
 log "Clearing gateway data volume..."
 docker volume rm abstractfinance_ibgateway-data 2>/dev/null || true
 
-# Start the gateway
-log "Starting IB Gateway..."
+# Start the gateway (IBGA will automatically:
+# 1. Launch IB Gateway in Xvfb
+# 2. Fill username/password
+# 3. Generate and enter TOTP code via oathtool
+# 4. Configure API settings)
+log "Starting IB Gateway (IBGA with headless TOTP 2FA)..."
 docker compose up -d ibgateway
 
-# Wait for gateway to initialize
-log "Waiting for gateway initialization (120s)..."
-sleep 120
+# Wait for IBGA to complete automated 2FA login process
+# IBGA typically takes 2-3 minutes to fully authenticate
+log "Waiting for IBGA headless 2FA login (180s)..."
+sleep 180
 
 # Verify connection
 log "Verifying gateway connection..."
@@ -58,7 +67,7 @@ from ib_insync import IB
 import sys
 try:
     ib = IB()
-    ib.connect('ibgateway', 4004, clientId=99, timeout=30)
+    ib.connect('ibgateway', 4000, clientId=99, timeout=30)
     if ib.isConnected():
         print('SUCCESS')
         ib.disconnect()

@@ -28,7 +28,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
-          username: root
+          username: abstractfinance
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
             cd /srv/abstractfinance
@@ -40,27 +40,28 @@ jobs:
             git fetch --tags
             git checkout ${{ github.event.release.tag_name || github.event.inputs.version }}
 
-            # Pull latest Docker images
+            # Pull pinned Docker images
             docker compose pull
 
             # Rebuild and restart with zero-downtime (including cross-monitor)
             docker compose -f docker-compose.yml -f docker-compose.prod.yml build trading-engine cross-monitor
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps trading-engine cross-monitor
 
-            # Wait for health check
-            sleep 60
+            # Wait for IBGA headless 2FA login
+            sleep 120
 
             # Verify services are running
             docker compose ps
             docker compose logs --tail=100 trading-engine
 
-            # Verify IB connection
+            # Verify IB connection (IBGA uses port 4000)
             docker compose exec -T trading-engine python -c "
-            from src.reconnect import IBReconnectManager
-            mgr = IBReconnectManager(host='ibgateway', port=4001)
-            assert mgr.connect(), 'Failed to connect to IB Gateway'
+            from ib_insync import IB
+            ib = IB()
+            ib.connect('ibgateway', 4000, clientId=99, timeout=30)
+            assert ib.isConnected(), 'Failed to connect to IB Gateway'
             print('IB Gateway connection verified')
-            mgr.disconnect()
+            ib.disconnect()
             "
 
       - name: Notify deployment success
@@ -73,7 +74,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
-          username: root
+          username: abstractfinance
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
             cd /srv/abstractfinance

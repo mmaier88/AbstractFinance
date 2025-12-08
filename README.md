@@ -528,13 +528,43 @@ Alerts include: disconnects, reconnection status, daily PnL, drawdown warnings.
 
 Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 
-## Security
+## Security & Production Hardening
 
-- Never commit `credentials.env`
-- Use environment variables for secrets
-- Restrict IB login to server IPs
-- Use Vault for production secrets
-- SSH key authentication only
+### Implemented Security Measures
+
+| Category | Measure | Status |
+|----------|---------|--------|
+| **Authentication** | Headless TOTP 2FA (IBGA) | ✅ Implemented |
+| **File Security** | .env permissions (chmod 600) | ✅ Implemented |
+| **User Isolation** | Non-root service user `abstractfinance` | ✅ Implemented |
+| **Secrets Audit** | Git history checked for leaks | ✅ Clean |
+| **Version Pinning** | Docker images pinned | ✅ Implemented |
+| **Version Pinning** | Python packages pinned | ✅ Implemented |
+| **CI/CD** | GitHub Actions with service user | ✅ Implemented |
+| **Maintenance** | Sunday gateway restart cron | ✅ Implemented |
+| **Alerts** | Telegram disconnect notifications | ✅ Implemented |
+
+### Pinned Versions
+
+**Docker Images:**
+- `heshiming/ibga:latest` (actively maintained, auto-updated)
+- `postgres:14-alpine`
+- `prom/prometheus:v2.54.1`
+- `grafana/grafana:11.3.0`
+- `grafana/loki:3.2.0`
+- `grafana/promtail:3.2.0`
+
+**Python:** `3.11.11-slim`
+
+See `requirements.txt` for pinned Python package versions.
+
+### Security Best Practices
+
+- Never commit `.env` or `credentials.env`
+- Use environment variables for all secrets
+- SSH key authentication only (password disabled)
+- Service user `abstractfinance` for all operations
+- Firewall rules restrict IB Gateway ports
 
 ## License
 

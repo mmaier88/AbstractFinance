@@ -1,5 +1,6 @@
 # AbstractFinance Trading Engine Dockerfile
-FROM python:3.11-slim
+# Pinned Python version for reproducibility
+FROM python:3.11.11-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
