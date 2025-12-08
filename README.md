@@ -340,6 +340,54 @@ Sent via Telegram/email:
 3. Implement builder method in `Strategy` class
 4. Add tests
 
+## Documentation
+
+Additional documentation:
+
+- **[IBKR Setup Guide](docs/IBKR_SETUP.md)** - IB Gateway configuration, paper trading credentials, exchange mappings
+- **[Production Hardening](docs/PRODUCTION_HARDENING.md)** - HA architecture, security, deployment hygiene, monitoring completeness
+
+## EU Compliance (PRIIPs/KID)
+
+EU retail accounts cannot trade US-listed ETFs without Key Information Documents. The system uses UCITS-compliant alternatives:
+
+| US ETF | UCITS Alternative | Exchange |
+|--------|------------------|----------|
+| SPY | CSPX | LSE |
+| QQQ | CNDX | LSE |
+| LQD | LQDE | LSE |
+| IEF | IDTL | LSE |
+| XLK | IUIT | XETRA |
+
+Exchange mappings for IBKR: `LSE` → `LSEETF`, `XETRA` → `IBIS`
+
+## Telegram Alerts Setup
+
+To receive disconnect and trading alerts:
+
+1. **Create a Bot**: Message `@BotFather` on Telegram, send `/newbot`
+2. **Get Chat ID**: Message your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`
+3. **Configure Server**:
+```bash
+ssh root@94.130.228.55
+nano /srv/abstractfinance/.env
+
+# Add:
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+
+docker compose restart trading-engine
+```
+
+Alerts include: disconnects, reconnection status, daily PnL, drawdown warnings.
+
+## Scheduled Maintenance
+
+- **Sunday 22:00 UTC**: Automatic IB Gateway restart (cron job)
+- **Weekly**: IBKR maintenance window (Sunday 23:45-Monday 00:45 UTC)
+
+Cron job location: `/etc/cron.d/abstractfinance-maintenance`
+
 ## Security
 
 - Never commit `credentials.env`
