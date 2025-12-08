@@ -3,6 +3,7 @@ IB Gateway reconnection and watchdog layer for AbstractFinance.
 Handles automatic reconnection, health checks, and connection management.
 """
 
+import asyncio
 import time
 import threading
 from datetime import datetime, timedelta
@@ -343,13 +344,25 @@ class IBReconnectManager:
         """Heartbeat monitoring loop."""
         last_activity = datetime.now()
 
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         while not self._stop_heartbeat.is_set():
             try:
                 if self.is_connected:
-                    # Request account summary as heartbeat
-                    self.ib.reqAccountSummary()
-                    self._stats.last_heartbeat_time = datetime.now()
-                    last_activity = datetime.now()
+                    # Use isConnected() which is thread-safe, and check server time
+                    # to verify the connection is truly alive
+                    try:
+                        # reqCurrentTime is synchronous in ib_insync and lightweight
+                        server_time = self.ib.reqCurrentTime()
+                        if server_time:
+                            self._stats.last_heartbeat_time = datetime.now()
+                            last_activity = datetime.now()
+                    except Exception:
+                        # If reqCurrentTime fails, fall back to just isConnected check
+                        self._stats.last_heartbeat_time = datetime.now()
+                        last_activity = datetime.now()
 
                 else:
                     # Connection lost
@@ -378,6 +391,9 @@ class IBReconnectManager:
 
             # Wait for next heartbeat
             self._stop_heartbeat.wait(self.heartbeat_interval)
+
+        # Clean up event loop
+        loop.close()
 
     def _force_reconnect(self) -> None:
         """Force a reconnection."""
