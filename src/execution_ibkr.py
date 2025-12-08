@@ -22,6 +22,7 @@ except ImportError:
 from .strategy_logic import OrderSpec
 from .portfolio import Position, Sleeve
 from .logging_utils import TradingLogger, get_trading_logger
+from .alerts import AlertManager, Alert, AlertType, AlertSeverity
 
 
 class OrderStatus(Enum):
@@ -76,7 +77,8 @@ class IBClient:
         client_id: int = 1,
         timeout: int = 30,
         readonly: bool = False,
-        logger: Optional[TradingLogger] = None
+        logger: Optional[TradingLogger] = None,
+        alert_manager: Optional[AlertManager] = None
     ):
         """
         Initialize IB client.
@@ -88,6 +90,7 @@ class IBClient:
             timeout: Connection timeout in seconds
             readonly: If True, don't place orders
             logger: Trading logger instance
+            alert_manager: AlertManager for sending notifications
         """
         if not IB_AVAILABLE:
             raise ImportError("ib_insync is required for IBKR integration")
@@ -98,11 +101,17 @@ class IBClient:
         self.timeout = timeout
         self.readonly = readonly
         self.logger = logger or get_trading_logger()
+        self.alert_manager = alert_manager
 
         self.ib = IB()
         self._connected = False
         self._instruments_cache: Dict[str, Contract] = {}
         self._pending_orders: Dict[str, Trade] = {}
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 5
+
+        # Wire up disconnect event handler
+        self.ib.disconnectedEvent += self._on_disconnect
 
     def connect(self) -> bool:
         """
@@ -151,6 +160,102 @@ class IBClient:
                 port=self.port,
                 success=True
             )
+
+    def _on_disconnect(self) -> None:
+        """
+        Handle unexpected disconnection from IB Gateway.
+        Sends alert and attempts reconnection.
+        """
+        self._connected = False
+
+        self.logger.log_connection_event(
+            event_type="unexpected_disconnect",
+            host=self.host,
+            port=self.port,
+            success=False,
+            error_message="IB Gateway connection lost"
+        )
+
+        # Send Telegram alert
+        if self.alert_manager:
+            self.alert_manager.send_connection_error(
+                f"IB Gateway disconnected unexpectedly!\n\n"
+                f"Host: {self.host}:{self.port}\n"
+                f"Attempting reconnection..."
+            )
+
+        # Attempt reconnection
+        self._attempt_reconnect()
+
+    def _attempt_reconnect(self) -> bool:
+        """
+        Attempt to reconnect to IB Gateway with exponential backoff.
+
+        Returns:
+            True if reconnection successful
+        """
+        import time as time_module
+
+        for attempt in range(1, self._max_reconnect_attempts + 1):
+            self._reconnect_attempts = attempt
+            wait_seconds = min(30 * attempt, 120)  # 30s, 60s, 90s, 120s, 120s
+
+            self.logger.log_connection_event(
+                event_type="reconnect_attempt",
+                host=self.host,
+                port=self.port,
+                success=False,
+                error_message=f"Attempt {attempt}/{self._max_reconnect_attempts}, waiting {wait_seconds}s"
+            )
+
+            time_module.sleep(wait_seconds)
+
+            try:
+                self.ib.connect(
+                    host=self.host,
+                    port=self.port,
+                    clientId=self.client_id,
+                    timeout=self.timeout,
+                    readonly=self.readonly
+                )
+
+                if self.ib.isConnected():
+                    self._connected = True
+                    self._reconnect_attempts = 0
+
+                    self.logger.log_connection_event(
+                        event_type="reconnect_success",
+                        host=self.host,
+                        port=self.port,
+                        success=True
+                    )
+
+                    if self.alert_manager:
+                        self.alert_manager.send_connection_error(
+                            f"IB Gateway reconnected successfully!\n\n"
+                            f"Host: {self.host}:{self.port}\n"
+                            f"Reconnected after {attempt} attempt(s)"
+                        )
+                    return True
+
+            except Exception as e:
+                self.logger.log_connection_event(
+                    event_type="reconnect_failed",
+                    host=self.host,
+                    port=self.port,
+                    success=False,
+                    error_message=str(e)
+                )
+
+        # All attempts failed
+        if self.alert_manager:
+            self.alert_manager.send_connection_error(
+                f"CRITICAL: IB Gateway reconnection FAILED!\n\n"
+                f"Host: {self.host}:{self.port}\n"
+                f"All {self._max_reconnect_attempts} reconnection attempts failed.\n"
+                f"Manual intervention required!"
+            )
+        return False
 
     def is_connected(self) -> bool:
         """Check if connected to IB Gateway."""

@@ -65,9 +65,9 @@ monitoring:
 
 # Alerts
 alerts:
-  enabled: false
+  enabled: true
   telegram:
-    enabled: false
+    enabled: true   # Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars
   email:
     enabled: false
   thresholds:

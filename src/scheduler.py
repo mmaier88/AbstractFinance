@@ -99,6 +99,14 @@ class DailyScheduler:
         self.logger.logger.info("scheduler_init", mode=self.mode)
 
         try:
+            # Initialize alert manager FIRST so it can be passed to other components
+            if ALERTS_AVAILABLE:
+                try:
+                    self.alert_manager = AlertManager(self.settings)
+                    self.logger.logger.info("alert_manager_initialized")
+                except Exception as e:
+                    self.logger.logger.warning(f"alert_manager_init_failed: {e}")
+
             # Initialize reconnect manager and connect
             self.reconnect_manager = IBReconnectManager(
                 host=self.ib_host,
@@ -113,14 +121,17 @@ class DailyScheduler:
                     severity="error",
                     message="Failed to connect to IB Gateway"
                 )
+                if self.alert_manager:
+                    self.alert_manager.send_connection_error("Failed to connect to IB Gateway during initialization")
                 return False
 
-            # Initialize IB client
+            # Initialize IB client with alert manager for disconnect notifications
             self.ib_client = IBClient(
                 host=self.ib_host,
                 port=self.ib_port,
                 client_id=self.ib_client_id + 1,  # Use different client ID
-                logger=self.logger
+                logger=self.logger,
+                alert_manager=self.alert_manager
             )
             self.ib_client.connect()
 
@@ -174,12 +185,7 @@ class DailyScheduler:
                 str(self.state_dir / "returns_history.csv")
             )
 
-            # Initialize alert manager if available
-            if ALERTS_AVAILABLE:
-                try:
-                    self.alert_manager = AlertManager(self.settings)
-                except Exception:
-                    pass
+            # Note: AlertManager is already initialized at the start of initialize()
 
             self.logger.logger.info("scheduler_init_complete")
             return True
