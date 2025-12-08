@@ -67,14 +67,17 @@ abstractfinance.prod.env         # Full .env file (in notesPlain field)
 - AF-Quants: Read
 - All others: No access
 
-**Items to store**:
-```
-ibkr.staging.username
-ibkr.staging.password
-ibkr.staging.totp-key
-db.staging.password
-abstractfinance.staging.env
-```
+**Items (ACTIVE)**:
+| Item | Type | Description |
+|------|------|-------------|
+| `ibkr.staging` | Login | Username/password for IBKR |
+| `ibkr.staging.totp-key` | Password | TOTP secret for headless 2FA |
+| `db.staging.password` | Password | PostgreSQL password |
+| `grafana.admin.password` | Password | Grafana admin password |
+| `telegram.bot-token` | API Credential | Telegram bot token |
+| `telegram.chat-id` | Password | Telegram chat ID |
+| `hetzner.ssh-key.staging` | Secure Note | SSH private + public key |
+| `abstractfinance.staging.env` | Secure Note | Complete .env file |
 
 ---
 
