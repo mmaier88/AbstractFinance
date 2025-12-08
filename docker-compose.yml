@@ -1,40 +1,44 @@
 services:
-  # IB Gateway Container (headless)
-  # Note: gnzsnz/ib-gateway uses socat to relay connections:
-  # - Internal: 127.0.0.1:4001/4002 (IB Gateway direct)
-  # - External (via socat): 0.0.0.0:4003/4004 (for Docker network access)
+  # IB Gateway Container (headless with TOTP automation)
+  # Using IBGA (heshiming/ibga) for fully automated 2FA login
+  # Docs: https://heshiming.github.io/ibga/
   ibgateway:
-    image: ghcr.io/gnzsnz/ib-gateway:latest
+    image: heshiming/ibga:latest
     container_name: ibgateway
     restart: always
     environment:
-      - TRADING_MODE=${TRADING_MODE:-paper}
-      - TWS_USERID=${IBKR_USERNAME}
-      - TWS_PASSWORD=${IBKR_PASSWORD}
-      - TWOFA_TIMEOUT_ACTION=restart
-      - AUTO_RESTART_TIME=11:59 PM
-      - RELOGIN_AFTER_TWOFA_TIMEOUT=yes
-      # Enable API write access (required for order placement)
-      - READ_ONLY_API=no
-      # Auto-confirm API order dialogs
-      - BYPASS_WARNING=yes
-      # Auto-take over existing sessions (when user logged in elsewhere)
-      - EXISTING_SESSION_DETECTED_ACTION=primary
+      - TZ=Europe/Berlin
+      # IBKR credentials
+      - IB_USERNAME=${IBKR_USERNAME}
+      - IB_PASSWORD=${IBKR_PASSWORD}
+      # TOTP secret for fully automated 2FA (no phone tap required)
+      - TOTP_KEY=${IBKR_TOTP_KEY}
+      # Region and timezone
+      - IB_REGION=europe
+      - IB_TIMEZONE=Europe/Berlin
+      # Login type: paper or live
+      - IB_LOGINTYPE=${TRADING_MODE:-paper}
+      # Auto logoff before IBKR maintenance window (Sunday night)
+      - IB_LOGOFF=11:55 PM Europe/Berlin
+      # API and logging settings
+      - IB_APILOG=data
+      - IB_LOGLEVEL=INFO
     ports:
-      - "4001:4003"  # Live trading (socat relay)
-      - "4002:4004"  # Paper trading (socat relay)
+      - "4001:4001"  # Live trading API
+      - "4002:4002"  # Paper trading API
       - "5900:5900"  # VNC (for debugging)
+      - "6080:6080"  # noVNC web interface
     volumes:
-      - ibgateway-data:/root/Jts
+      - ibgateway-data:/home/ibg
     networks:
       - trading-network
     healthcheck:
-      # Check socat relay port (4004=paper, 4003=live)
-      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/4004 || exit 1"]
+      # Check API port (4002=paper, 4001=live)
+      test: ["CMD-SHELL", "nc -z localhost 4002 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 120s
+      start_period: 180s
 
   # Trading Engine
   trading-engine:
@@ -51,8 +55,8 @@ services:
     environment:
       - MODE=${MODE:-paper}
       - IBKR_HOST=ibgateway
-      # Use socat relay ports: 4003=live, 4004=paper
-      - IBKR_PORT=${IBKR_PORT:-4004}
+      # IBGA exposes ports directly: 4001=live, 4002=paper
+      - IBKR_PORT=${IBKR_PORT:-4002}
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=${DB_NAME:-abstractfinance}
