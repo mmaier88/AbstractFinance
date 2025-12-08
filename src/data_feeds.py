@@ -164,9 +164,17 @@ class DataFeed:
         spec = self._instruments[instrument_id]
 
         if spec.sec_type == "STK":
-            # For European exchanges, use SMART routing with primaryExchange
-            if spec.exchange in ('LSE', 'XETRA', 'SBF', 'IBIS'):
-                return Stock(spec.symbol, 'SMART', spec.currency, primaryExchange=spec.exchange)
+            # For European exchanges, use SMART routing with correct primaryExchange
+            # IBKR uses LSEETF for LSE ETFs, IBIS2 for XETRA
+            primary_exchange_map = {
+                'LSE': 'LSEETF',
+                'XETRA': 'IBIS2',
+                'SBF': 'SBF',
+                'IBIS': 'IBIS2',
+            }
+            if spec.exchange in primary_exchange_map:
+                primary = primary_exchange_map[spec.exchange]
+                return Stock(spec.symbol, 'SMART', spec.currency, primaryExchange=primary)
             return Stock(spec.symbol, spec.exchange, spec.currency)
         elif spec.sec_type == "FUT":
             # For futures, we need to specify expiry - use front month

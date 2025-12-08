@@ -280,9 +280,17 @@ class IBClient:
         currency = spec.get('currency', 'USD')
 
         if sec_type == 'STK':
-            # For European exchanges (LSE, XETRA), use SMART routing with primaryExchange
-            if exchange in ('LSE', 'XETRA', 'SBF', 'IBIS'):
-                contract = Stock(symbol, 'SMART', currency, primaryExchange=exchange)
+            # For European exchanges, use SMART routing with correct primaryExchange
+            # IBKR uses LSEETF for LSE ETFs, IBIS2 for XETRA
+            primary_exchange_map = {
+                'LSE': 'LSEETF',
+                'XETRA': 'IBIS2',
+                'SBF': 'SBF',
+                'IBIS': 'IBIS2',
+            }
+            if exchange in primary_exchange_map:
+                primary = primary_exchange_map[exchange]
+                contract = Stock(symbol, 'SMART', currency, primaryExchange=primary)
             else:
                 contract = Stock(symbol, exchange, currency)
 
