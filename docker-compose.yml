@@ -30,6 +30,7 @@ services:
       - "6080:6080"  # noVNC web interface
     volumes:
       - ibgateway-data:/home/ibg
+      - ibgateway-settings:/home/ibg_settings
     networks:
       - trading-network
     healthcheck:
@@ -167,6 +168,7 @@ networks:
 
 volumes:
   ibgateway-data:
+  ibgateway-settings:
   pgdata:
   prometheus-data:
   grafana-data:
