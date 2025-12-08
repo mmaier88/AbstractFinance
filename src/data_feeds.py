@@ -165,12 +165,12 @@ class DataFeed:
 
         if spec.sec_type == "STK":
             # For European exchanges, use SMART routing with correct primaryExchange
-            # IBKR uses LSEETF for LSE ETFs, IBIS2 for XETRA
+            # IBKR uses LSEETF for LSE ETFs, IBIS for XETRA
             primary_exchange_map = {
                 'LSE': 'LSEETF',
-                'XETRA': 'IBIS2',
+                'XETRA': 'IBIS',
                 'SBF': 'SBF',
-                'IBIS': 'IBIS2',
+                'IBIS': 'IBIS',
             }
             if spec.exchange in primary_exchange_map:
                 primary = primary_exchange_map[spec.exchange]

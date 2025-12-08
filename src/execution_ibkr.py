@@ -284,9 +284,9 @@ class IBClient:
             # IBKR uses LSEETF for LSE ETFs, IBIS2 for XETRA
             primary_exchange_map = {
                 'LSE': 'LSEETF',
-                'XETRA': 'IBIS2',
+                'XETRA': 'IBIS',  # Try IBIS instead of IBIS2
                 'SBF': 'SBF',
-                'IBIS': 'IBIS2',
+                'IBIS': 'IBIS',
             }
             if exchange in primary_exchange_map:
                 primary = primary_exchange_map[exchange]
