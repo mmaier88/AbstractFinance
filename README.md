@@ -35,6 +35,27 @@ Based on historical calibration:
 - **Target Sharpe Ratio**: ~1.0-1.1
 - **Tail Hedge Budget**: 2-3% NAV/year
 
+## Paper Trading Status
+
+> **LIVE since December 3, 2025** - 60-day burn-in period in progress
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| **Days Elapsed** | 5 / 60 | 60 trading days |
+| **NAV** | $10,843,730 | N/A |
+| **Total Return** | +8.4% | Positive |
+| **Max Drawdown** | -4.21% | < 10% |
+| **Target End Date** | Feb 1, 2026 | - |
+
+**Active Sleeve**: core_index_rv only (Phase 1)
+
+For detailed tracking, see [`docs/PAPER_TRADING.md`](docs/PAPER_TRADING.md).
+
+```bash
+# Quick status check
+ssh root@94.130.228.55 "cat /srv/abstractfinance/state/portfolio_state.json | python3 -m json.tool"
+```
+
 ## Architecture
 
 ```
