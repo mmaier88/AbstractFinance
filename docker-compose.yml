@@ -27,7 +27,7 @@ services:
       - "4001:4001"  # Live trading API
       - "4002:4002"  # Paper trading API
       - "5900:5900"  # VNC (for debugging)
-      - "6080:6080"  # noVNC web interface
+      - "6080:5800"  # noVNC web interface (internal port 5800)
     volumes:
       - ibgateway-data:/home/ibg
       - ibgateway-settings:/home/ibg_settings
