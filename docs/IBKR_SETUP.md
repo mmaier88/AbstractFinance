@@ -4,26 +4,28 @@
 
 AbstractFinance uses Interactive Brokers for execution via the `gnzsnz/ib-gateway` Docker image.
 
-### Credentials (Staging)
+### Credentials (Example)
 
 | Setting | Value | Description |
 |---------|-------|-------------|
-| `IBKR_USERNAME` | `dnczyt810` | Paper trading username (NOT main account) |
+| `IBKR_USERNAME` | `your_paper_username` | Paper trading username (NOT main account) |
 | `IBKR_PASSWORD` | `[stored in .env]` | Paper trading specific password |
-| `IBKR_ACCOUNT_ID` | `DUO775682` | Paper trading account number |
+| `IBKR_ACCOUNT_ID` | `DUxxxxxxx` | Paper trading account number |
 | `TRADING_MODE` | `paper` | Must be `paper` for paper trading |
+
+> **Security Note**: Never commit real credentials to Git. Use `.env` files and ensure they're in `.gitignore`.
 
 ### Key Lessons Learned
 
 #### 1. Paper Trading Username vs Main Account
 
-**Problem**: When your main IBKR account (`abstractbot`) has multiple paper trading sub-accounts, you'll get:
+**Problem**: When your main IBKR account has multiple paper trading sub-accounts, you'll get:
 ```
 Connection to server failed: The specified user has multiple Paper Trading
 users associated with it.
 ```
 
-**Solution**: Use the **paper trading username directly** (e.g., `dnczyt810`), not the main account username.
+**Solution**: Use the **paper trading username directly**, not the main account username.
 
 To find your paper trading username:
 1. Log into [IBKR Client Portal](https://portal.interactivebrokers.com)
@@ -34,8 +36,8 @@ To find your paper trading username:
 
 **Important**: Paper trading accounts have their **own password**, separate from the main account.
 
-- Main account password: Used for `abstractbot`
-- Paper account password: Used for `dnczyt810`
+- Main account password: Used for your main account
+- Paper account password: Used for paper trading username
 
 You can reset the paper trading password in Client Portal → Settings → Paper Trading Account.
 
@@ -62,14 +64,14 @@ If you're logged in via:
 Located in `/srv/abstractfinance/.env`:
 
 ```bash
-# IBKR Credentials
-IBKR_USERNAME=dnczyt810          # Paper trading username
-IBKR_PASSWORD=your_paper_password # Paper trading password
-IBKR_ACCOUNT_ID=DUO775682        # Paper account number
-IBKR_PORT=4004                    # Paper trading port
+# IBKR Credentials (use your actual values)
+IBKR_USERNAME=your_paper_username    # Paper trading username
+IBKR_PASSWORD=your_paper_password    # Paper trading password
+IBKR_ACCOUNT_ID=DUxxxxxxx            # Paper account number
+IBKR_PORT=4004                       # Paper trading port
 
 # Trading Mode
-TRADING_MODE=paper               # paper or live
+TRADING_MODE=paper                   # paper or live
 ```
 
 ## Docker Port Mapping
@@ -106,7 +108,7 @@ The trading engine connects to `ibgateway:4004` (paper) or `ibgateway:4003` (liv
 
 ```bash
 # SSH to server
-ssh root@94.130.228.55
+ssh user@your-server-ip
 
 # Update .env file
 nano /srv/abstractfinance/.env
@@ -134,3 +136,15 @@ See `config/instruments.yaml` for the UCITS alternatives:
 - etc.
 
 Individual stocks (ARCC, MAIN, etc.) are not affected - no KID required.
+
+## Exchange Mappings for European ETFs
+
+IBKR uses specific exchange identifiers for European markets:
+
+| Config Exchange | IBKR primaryExchange | Notes |
+|-----------------|---------------------|-------|
+| `LSE` | `LSEETF` | London Stock Exchange ETFs |
+| `XETRA` | `IBIS` | German electronic exchange |
+| `SBF` | `SBF` | Euronext Paris |
+
+The trading engine automatically maps these in `src/execution_ibkr.py`.
