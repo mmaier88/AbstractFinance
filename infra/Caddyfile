@@ -1,0 +1,110 @@
+# Caddyfile for AbstractFinance
+# Provides automatic HTTPS with Let's Encrypt certificates
+#
+# Requirements:
+# - Domain pointing to server IP (or use IP with self-signed certs)
+# - Ports 80 and 443 open for ACME challenge
+#
+# For production, replace {$DOMAIN} with your actual domain
+# e.g., abstractfinance.example.com
+
+# Grafana - Main dashboard
+{$GRAFANA_DOMAIN:grafana.localhost} {
+    reverse_proxy grafana:3000
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Basic rate limiting
+    rate_limit {
+        zone login {
+            match {
+                path /login*
+            }
+            key {remote_host}
+            events 10
+            window 1m
+        }
+    }
+}
+
+# Prometheus - Metrics (optional, can be restricted to internal access)
+{$PROMETHEUS_DOMAIN:prometheus.localhost} {
+    reverse_proxy prometheus:9090
+
+    # Basic auth for prometheus
+    basicauth {
+        {$PROMETHEUS_USER:admin} {$PROMETHEUS_PASSWORD_HASH}
+    }
+
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+    }
+}
+
+# Alertmanager - Alerts (optional)
+{$ALERTMANAGER_DOMAIN:alertmanager.localhost} {
+    reverse_proxy alertmanager:9093
+
+    # Basic auth for alertmanager
+    basicauth {
+        {$ALERTMANAGER_USER:admin} {$ALERTMANAGER_PASSWORD_HASH}
+    }
+
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+    }
+}
+
+# Trading Engine Health Check (public for uptime monitors)
+{$HEALTH_DOMAIN:health.localhost} {
+    reverse_proxy trading-engine:8080
+
+    # Only allow health endpoint
+    @healthcheck {
+        path /health
+    }
+    handle @healthcheck {
+        reverse_proxy trading-engine:8080
+    }
+
+    # Block everything else
+    handle {
+        respond "Not Found" 404
+    }
+}
+
+# Alternative: Single domain with path-based routing
+# Uncomment below if you prefer a single domain
+#
+# {$DOMAIN:abstractfinance.localhost} {
+#     # Grafana at /grafana
+#     handle_path /grafana/* {
+#         reverse_proxy grafana:3000
+#     }
+#
+#     # Prometheus at /prometheus
+#     handle_path /prometheus/* {
+#         basicauth {
+#             admin {$PROMETHEUS_PASSWORD_HASH}
+#         }
+#         reverse_proxy prometheus:9090
+#     }
+#
+#     # Health check at /health
+#     handle /health {
+#         reverse_proxy trading-engine:8080
+#     }
+#
+#     # Default: redirect to Grafana
+#     handle {
+#         redir /grafana permanent
+#     }
+# }

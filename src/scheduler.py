@@ -25,6 +25,79 @@ from .reconnect import IBReconnectManager, HealthChecker
 from .logging_utils import setup_logging, TradingLogger, get_trading_logger
 from .healthcheck import start_health_server, get_health_server
 
+
+# =============================================================================
+# IBKR Maintenance Window Configuration
+# =============================================================================
+# IBKR has regular maintenance windows when connections may be unstable:
+# - Weekly: Sunday 23:45 - Monday 00:45 UTC (system restart)
+# - Daily: 22:00 - 22:15 UTC (possible brief disconnects)
+#
+# During these windows, we should avoid placing orders.
+
+IBKR_MAINTENANCE_WINDOWS = [
+    # Weekly maintenance (Sunday night UTC)
+    {
+        "name": "weekly_restart",
+        "days": [6],  # Sunday (0=Monday, 6=Sunday in Python weekday())
+        "start_hour": 23,
+        "start_minute": 45,
+        "end_hour": 24,  # Wraps to next day
+        "end_minute": 45,  # Actually 00:45 next day
+    },
+    # Daily maintenance window
+    {
+        "name": "daily_disconnect",
+        "days": [0, 1, 2, 3, 4],  # Monday-Friday
+        "start_hour": 22,
+        "start_minute": 0,
+        "end_hour": 22,
+        "end_minute": 15,
+    },
+]
+
+
+def is_maintenance_window(now: Optional[datetime] = None) -> tuple:
+    """
+    Check if the current time is within an IBKR maintenance window.
+
+    Args:
+        now: Optional datetime (UTC), defaults to current time
+
+    Returns:
+        Tuple of (is_maintenance: bool, window_name: str, minutes_remaining: int)
+    """
+    if now is None:
+        now = datetime.now(pytz.UTC)
+
+    current_day = now.weekday()
+    current_minutes = now.hour * 60 + now.minute
+
+    for window in IBKR_MAINTENANCE_WINDOWS:
+        if current_day not in window["days"]:
+            continue
+
+        start_minutes = window["start_hour"] * 60 + window["start_minute"]
+
+        # Handle overnight windows (end_hour >= 24)
+        if window["end_hour"] >= 24:
+            end_minutes = (window["end_hour"] - 24) * 60 + window["end_minute"]
+            # Check if we're in the first part (before midnight) or second part (after midnight)
+            if current_minutes >= start_minutes:
+                # We're before midnight, in maintenance
+                remaining = (24 * 60 - current_minutes) + end_minutes
+                return (True, window["name"], remaining)
+            elif current_day == 0 and current_minutes < end_minutes:
+                # Monday morning, check if we're still in Sunday's window
+                return (True, window["name"], end_minutes - current_minutes)
+        else:
+            end_minutes = window["end_hour"] * 60 + window["end_minute"]
+            if start_minutes <= current_minutes < end_minutes:
+                remaining = end_minutes - current_minutes
+                return (True, window["name"], remaining)
+
+    return (False, None, 0)
+
 try:
     from .alerts import AlertManager
     ALERTS_AVAILABLE = True
@@ -227,8 +300,20 @@ class DailyScheduler:
             "steps_completed": [],
             "errors": [],
             "orders_placed": 0,
-            "orders_filled": 0
+            "orders_filled": 0,
+            "maintenance_window": False
         }
+
+        # Check for maintenance window
+        in_maintenance, window_name, minutes_remaining = is_maintenance_window()
+        if in_maintenance:
+            run_summary["maintenance_window"] = True
+            run_summary["maintenance_window_name"] = window_name
+            run_summary["maintenance_minutes_remaining"] = minutes_remaining
+            self.logger.logger.warning(
+                f"IBKR maintenance window active: {window_name}, "
+                f"~{minutes_remaining} minutes remaining. Skipping order execution."
+            )
 
         try:
             # Step 1: Initialize if not already done
@@ -268,12 +353,21 @@ class DailyScheduler:
             run_summary["crisis_action"] = crisis_action.action_type
             run_summary["steps_completed"].append("check_crisis")
 
-            # Step 8: Execute orders
+            # Step 8: Execute orders (skip during maintenance windows)
             all_orders = strategy_output.orders + hedge_orders + crisis_orders
             if all_orders:
-                execution_results = self._execute_orders(all_orders)
-                run_summary["orders_placed"] = execution_results["total_orders"]
-                run_summary["orders_filled"] = execution_results["filled"]
+                if in_maintenance:
+                    # Skip order execution during maintenance
+                    self.logger.logger.warning(
+                        f"Skipping {len(all_orders)} orders due to maintenance window"
+                    )
+                    run_summary["orders_skipped"] = len(all_orders)
+                    run_summary["orders_placed"] = 0
+                    run_summary["orders_filled"] = 0
+                else:
+                    execution_results = self._execute_orders(all_orders)
+                    run_summary["orders_placed"] = execution_results["total_orders"]
+                    run_summary["orders_filled"] = execution_results["filled"]
             run_summary["steps_completed"].append("execute_orders")
 
             # Step 9: Record daily P&L

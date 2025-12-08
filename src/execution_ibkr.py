@@ -24,6 +24,19 @@ from .portfolio import Position, Sleeve
 from .logging_utils import TradingLogger, get_trading_logger
 from .alerts import AlertManager, Alert, AlertType, AlertSeverity
 
+# Metrics integration
+try:
+    from .metrics import (
+        update_ib_connection,
+        record_ib_reconnect,
+        record_order_submitted,
+        record_order_filled,
+        record_order_rejected,
+    )
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
 
 class OrderStatus(Enum):
     """Order status states."""
@@ -137,6 +150,10 @@ class IBClient:
                 success=self._connected
             )
 
+            # Update metrics
+            if METRICS_AVAILABLE:
+                update_ib_connection(self._connected)
+
             return self._connected
 
         except Exception as e:
@@ -147,6 +164,8 @@ class IBClient:
                 success=False,
                 error_message=str(e)
             )
+            if METRICS_AVAILABLE:
+                update_ib_connection(False)
             return False
 
     def disconnect(self) -> None:
@@ -160,6 +179,8 @@ class IBClient:
                 port=self.port,
                 success=True
             )
+            if METRICS_AVAILABLE:
+                update_ib_connection(False)
 
     def _on_disconnect(self) -> None:
         """
@@ -167,6 +188,10 @@ class IBClient:
         Sends alert and attempts reconnection.
         """
         self._connected = False
+
+        # Update metrics
+        if METRICS_AVAILABLE:
+            update_ib_connection(False)
 
         self.logger.log_connection_event(
             event_type="unexpected_disconnect",
@@ -230,6 +255,11 @@ class IBClient:
                         success=True
                     )
 
+                    # Record successful reconnect
+                    if METRICS_AVAILABLE:
+                        record_ib_reconnect(success=True)
+                        update_ib_connection(True)
+
                     if self.alert_manager:
                         self.alert_manager.send_connection_error(
                             f"IB Gateway reconnected successfully!\n\n"
@@ -246,6 +276,9 @@ class IBClient:
                     success=False,
                     error_message=str(e)
                 )
+                # Record failed reconnect attempt
+                if METRICS_AVAILABLE:
+                    record_ib_reconnect(success=False)
 
         # All attempts failed
         if self.alert_manager:
@@ -520,6 +553,11 @@ class IBClient:
             trade = self.ib.placeOrder(contract, order)
             self._pending_orders[order_id] = trade
 
+            # Record order submission metric
+            if METRICS_AVAILABLE:
+                sleeve = getattr(order_spec, 'sleeve', 'unknown')
+                record_order_submitted(order_spec.instrument_id, action, sleeve)
+
             # Wait for fill (with timeout)
             timeout_seconds = 30
             start_time = time.time()
@@ -561,10 +599,24 @@ class IBClient:
                     fill_price=avg_price,
                     commission=commission
                 )
+                # Record fill metric with latency
+                if METRICS_AVAILABLE:
+                    latency = time.time() - start_time
+                    sleeve = getattr(order_spec, 'sleeve', 'unknown')
+                    record_order_filled(order_spec.instrument_id, action, sleeve, latency)
+
+            # Record rejection metric if order was rejected
+            if status in [OrderStatus.REJECTED, OrderStatus.CANCELLED]:
+                if METRICS_AVAILABLE:
+                    reason = trade.orderStatus.status if trade.orderStatus else 'unknown'
+                    record_order_rejected(order_spec.instrument_id, reason)
 
             return report
 
         except Exception as e:
+            # Record error as rejection
+            if METRICS_AVAILABLE:
+                record_order_rejected(order_spec.instrument_id, str(e)[:50])
             return ExecutionReport(
                 order_id=order_id,
                 instrument_id=order_spec.instrument_id,

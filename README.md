@@ -105,7 +105,8 @@ AbstractFinance/
 │   ├── run_daily.sh           # Daily run wrapper
 │   ├── restart_gateway.sh     # Sunday maintenance restart
 │   ├── cross_monitor.py       # Cross-server auto-remediation
-│   └── backup_postgres.sh     # Automated database backups
+│   ├── backup_postgres.sh     # Automated database backups
+│   └── setup_pg_replication.sh # PostgreSQL streaming replication setup
 ├── tests/
 │   ├── test_portfolio.py
 │   ├── test_risk_engine.py
@@ -116,16 +117,19 @@ AbstractFinance/
 │   ├── alert-rules.yml        # Trading-specific alerts
 │   ├── alertmanager.yml       # Alert routing to Telegram
 │   ├── loki-config.yml
+│   ├── Caddyfile              # SSL/TLS reverse proxy config
 │   └── grafana/
 ├── docs/
 │   ├── IBKR_SETUP.md
 │   ├── PRODUCTION_HARDENING.md
-│   └── FAILOVER.md            # HA failover procedure
+│   ├── FAILOVER.md            # HA failover procedure
+│   └── ROLLBACK.md            # Deployment rollback procedure
 ├── .github/workflows/
 │   ├── ci.yml
 │   ├── deploy-staging.yml
 │   └── deploy-production.yml
 ├── docker-compose.yml
+├── docker-compose.caddy.yml   # SSL/TLS overlay with Caddy
 ├── Dockerfile
 ├── requirements.txt
 └── README.md
@@ -580,12 +584,103 @@ docker compose restart trading-engine
 
 Alerts include: disconnects, reconnection status, daily PnL, drawdown warnings.
 
-## Scheduled Maintenance
+## Scheduled Maintenance & IBKR Windows
+
+### Automatic Maintenance
 
 - **Sunday 22:00 UTC**: Automatic IB Gateway restart (cron job)
-- **Weekly**: IBKR maintenance window (Sunday 23:45-Monday 00:45 UTC)
+- **Daily 3:00 UTC**: PostgreSQL backup with 30-day retention
 
 Cron job location: `/etc/cron.d/abstractfinance-maintenance`
+
+### IBKR Maintenance Windows
+
+The scheduler automatically detects IBKR maintenance windows and **skips order execution** during these periods:
+
+| Window | Schedule (UTC) | Duration | Action |
+|--------|---------------|----------|--------|
+| **Weekly Restart** | Sunday 23:45 - Monday 00:45 | 60 min | Orders skipped |
+| **Daily Disconnect** | Mon-Fri 22:00 - 22:15 | 15 min | Orders skipped |
+
+During maintenance windows:
+- Position sync and NAV calculation continue normally
+- Risk metrics are computed but orders are not placed
+- Run summary includes `maintenance_window: true`
+- Skipped orders appear as `orders_skipped` in logs
+
+This is implemented in `src/scheduler.py` via the `is_maintenance_window()` function.
+
+## SSL/TLS with Caddy (Optional)
+
+For production with HTTPS, use the Caddy reverse proxy overlay:
+
+```bash
+# Enable HTTPS for Grafana, Prometheus, Alertmanager
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+```
+
+Requirements:
+- Domain name pointing to server IP
+- Ports 80/443 open in firewall
+- Set `GRAFANA_DOMAIN`, `PROMETHEUS_DOMAIN` in `.env`
+
+Caddy automatically obtains and renews Let's Encrypt certificates.
+
+Configuration: `infra/Caddyfile`
+
+## Database Operations
+
+### Automated Backups
+
+PostgreSQL backups run daily at 3:00 UTC via cron:
+
+```bash
+# Manual backup
+/srv/abstractfinance/scripts/backup_postgres.sh
+
+# View backups
+ls -la /srv/abstractfinance/backups/
+```
+
+Features:
+- Gzipped dumps with timestamps
+- 30-day retention policy
+- Optional sync to standby server via WireGuard
+
+### PostgreSQL Replication (Optional)
+
+For production with >$1M AUM, streaming replication is available:
+
+```bash
+# On primary server
+./scripts/setup_pg_replication.sh primary
+
+# On standby server
+./scripts/setup_pg_replication.sh standby
+```
+
+For paper trading, the backup-based approach is recommended:
+```bash
+./scripts/setup_pg_replication.sh backup
+```
+
+## Deployment Rollback
+
+Rollback procedures documented in [docs/ROLLBACK.md](docs/ROLLBACK.md).
+
+### Quick Rollback Commands
+
+```bash
+# Rollback to previous git commit
+ssh root@94.130.228.55 "cd /srv/abstractfinance && git checkout HEAD~1 && docker compose build trading-engine && docker compose up -d trading-engine"
+
+# Restore database from backup
+BACKUP=$(ls -t /srv/abstractfinance/backups/*.sql.gz | head -1)
+gunzip -c $BACKUP | docker exec -i postgres psql -U postgres -d abstractfinance
+
+# Emergency stop
+ssh root@94.130.228.55 "cd /srv/abstractfinance && docker compose down"
+```
 
 ## Security & Production Hardening
 
@@ -608,6 +703,12 @@ Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 | **High Availability** | Standby VPS (fsn1 datacenter) | ✅ Provisioned |
 | **High Availability** | WireGuard tunnel between servers | ✅ Active |
 | **High Availability** | Failover procedure documented | ✅ Complete |
+| **High Availability** | Rollback procedure documented | ✅ Complete |
+| **Operations** | IBKR maintenance window awareness | ✅ Implemented |
+| **Operations** | Automated PostgreSQL backups | ✅ Implemented |
+| **Operations** | PostgreSQL replication scripts | ✅ Available |
+| **SSL/TLS** | Caddy reverse proxy config | ✅ Available |
+| **Metrics** | Execution metrics (orders/fills/latency) | ✅ Wired |
 
 ### Pinned Versions
 

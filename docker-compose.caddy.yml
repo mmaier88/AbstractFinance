@@ -1,0 +1,56 @@
+# Docker Compose override for SSL/TLS via Caddy
+# Usage: docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+#
+# Prerequisites:
+# 1. Set GRAFANA_DOMAIN, PROMETHEUS_DOMAIN, etc. in .env
+# 2. Point DNS to your server IP
+# 3. Open ports 80 and 443 in firewall
+
+services:
+  # Caddy reverse proxy with automatic HTTPS
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - GRAFANA_DOMAIN=${GRAFANA_DOMAIN:-grafana.localhost}
+      - PROMETHEUS_DOMAIN=${PROMETHEUS_DOMAIN:-prometheus.localhost}
+      - ALERTMANAGER_DOMAIN=${ALERTMANAGER_DOMAIN:-alertmanager.localhost}
+      - HEALTH_DOMAIN=${HEALTH_DOMAIN:-health.localhost}
+      - PROMETHEUS_USER=${PROMETHEUS_USER:-admin}
+      - PROMETHEUS_PASSWORD_HASH=${PROMETHEUS_PASSWORD_HASH}
+      - ALERTMANAGER_USER=${ALERTMANAGER_USER:-admin}
+      - ALERTMANAGER_PASSWORD_HASH=${ALERTMANAGER_PASSWORD_HASH}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - trading-network
+    depends_on:
+      - grafana
+      - prometheus
+      - alertmanager
+      - trading-engine
+
+  # Override Grafana to not expose port directly (Caddy handles it)
+  grafana:
+    ports: []  # Remove direct port exposure
+    environment:
+      - GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN:-grafana.localhost}
+      - GF_SERVER_DOMAIN=${GRAFANA_DOMAIN:-grafana.localhost}
+
+  # Override Prometheus to not expose port directly
+  prometheus:
+    ports: []
+
+  # Override Alertmanager to not expose port directly
+  alertmanager:
+    ports: []
+
+volumes:
+  caddy-data:
+  caddy-config:

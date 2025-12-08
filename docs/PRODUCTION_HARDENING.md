@@ -154,7 +154,7 @@ Configure trading engine to:
 - [x] Create restart script (scripts/restart_gateway.sh)
 - [x] Add cron job for Sunday restarts (/etc/cron.d/abstractfinance-maintenance)
 - [x] Verify auto-reconnect logic in engine
-- [ ] Add maintenance window awareness to scheduler
+- [x] Add maintenance window awareness to scheduler
 - [x] Set up Telegram alerts for disconnects
 
 ---
@@ -344,6 +344,7 @@ jobs:
 - [x] Pin all Docker image versions
 - [x] Pin all Python package versions
 - [x] Set up GitHub Actions deployment
+- [x] Document rollback procedure (docs/ROLLBACK.md)
 - [ ] Add deployment audit logging
 
 ---
@@ -503,12 +504,15 @@ Create panels for:
 - [x] Standby VPS provisioned and tested (abstractfinance-standby @ fsn1)
 - [x] WireGuard tunnel configured (10.0.0.1 <-> 10.0.0.2)
 - [x] Failover procedure documented (docs/FAILOVER.md)
+- [x] PostgreSQL backup script deployed (scripts/backup_postgres.sh)
+- [x] PostgreSQL replication scripts available (scripts/setup_pg_replication.sh)
 
 #### Operations
 - [x] Gateway restart script deployed (scripts/restart_gateway.sh)
 - [x] Cron job for Sunday maintenance (/etc/cron.d/abstractfinance-maintenance)
 - [x] Auto-reconnect logic verified
-- [ ] Maintenance window handling in scheduler
+- [x] Maintenance window handling in scheduler
+- [x] Daily PostgreSQL backups (3:00 UTC cron)
 
 #### Security
 - [x] Non-root service user created (abstractfinance)
@@ -516,15 +520,17 @@ Create panels for:
 - [ ] Secrets in proper manager
 - [x] Git history audited for leaks
 - [ ] IBKR password rotated
+- [x] Caddy SSL/TLS config available (infra/Caddyfile)
 
 #### Deployment
 - [x] All versions pinned (Docker images + Python packages)
 - [x] CI/CD pipeline configured (GitHub Actions)
+- [x] Rollback procedure documented (docs/ROLLBACK.md)
 - [ ] Deployment audit logging enabled
-- [ ] Rollback procedure documented
 
 #### Monitoring
 - [x] All trading metrics exposed (src/metrics.py)
+- [x] Execution metrics wired (orders/fills/latency in execution_ibkr.py)
 - [x] Alert rules configured (infra/alert-rules.yml)
 - [x] Telegram alerts working (via Alertmanager)
 - [x] Grafana dashboards complete
