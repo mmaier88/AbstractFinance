@@ -81,25 +81,31 @@ Based on historical calibration:
 AbstractFinance/
 ├── config/
 │   ├── settings.yaml          # All tunable parameters
-│   ├── instruments.yaml       # Symbol mappings & contract specs
+│   ├── instruments.yaml       # Symbol mappings & contract specs (76 instruments)
 │   └── credentials.env.template
 ├── src/
 │   ├── __init__.py
-│   ├── data_feeds.py          # Market data abstraction (IB + fallbacks)
-│   ├── portfolio.py           # Positions, NAV, P&L, sleeves
-│   ├── risk_engine.py         # Vol targeting, DD, hedge budget
-│   ├── strategy_logic.py      # Sleeve construction + regime filter
-│   ├── tail_hedge.py          # Tail hedge & crisis management
-│   ├── execution_ibkr.py      # IBKR integration via ib_insync
-│   ├── reconnect.py           # Watchdog & reconnection layer
-│   ├── scheduler.py           # Daily run orchestrator
-│   ├── backtest.py            # Historical + Monte Carlo backtester
-│   ├── paper_trading.py       # 60-day burn-in orchestrator
-│   ├── alerts.py              # Telegram/email alerts
+│   ├── data_feeds.py          # Market data (IB primary + yfinance fallback)
+│   ├── portfolio.py           # Positions, NAV, P&L, 6-sleeve tracking
+│   ├── risk_engine.py         # Vol targeting, 4-regime detection, DD control
+│   ├── strategy_logic.py      # Sleeve construction + UCITS compliance
+│   ├── tail_hedge.py          # Tail hedges + crisis playbook
+│   ├── execution_ibkr.py      # IBKR via ib_insync (810 lines)
+│   ├── reconnect.py           # Watchdog, heartbeat, auto-reconnect
+│   ├── scheduler.py           # Continuous loop orchestrator (713 lines)
+│   ├── stock_screener.py      # Multi-factor stock selection (589 lines)
+│   ├── backtest.py            # Historical + Monte Carlo (20+ metrics)
+│   ├── paper_trading.py       # 60-day burn-in with validation gates
+│   ├── alerts.py              # Telegram/email notifications
+│   ├── metrics.py             # Prometheus metrics (20+ metric types)
+│   ├── healthcheck.py         # HTTP health endpoints
 │   └── logging_utils.py       # Structured JSON logging
 ├── scripts/
 │   ├── setup_cron.sh          # Install cron job
-│   └── run_daily.sh           # Daily run wrapper
+│   ├── run_daily.sh           # Daily run wrapper
+│   ├── restart_gateway.sh     # Sunday maintenance restart
+│   ├── cross_monitor.py       # Cross-server auto-remediation
+│   └── backup_postgres.sh     # Automated database backups
 ├── tests/
 │   ├── test_portfolio.py
 │   ├── test_risk_engine.py
@@ -107,8 +113,14 @@ AbstractFinance/
 │   └── test_tail_hedge.py
 ├── infra/
 │   ├── prometheus.yml
+│   ├── alert-rules.yml        # Trading-specific alerts
+│   ├── alertmanager.yml       # Alert routing to Telegram
 │   ├── loki-config.yml
 │   └── grafana/
+├── docs/
+│   ├── IBKR_SETUP.md
+│   ├── PRODUCTION_HARDENING.md
+│   └── FAILOVER.md            # HA failover procedure
 ├── .github/workflows/
 │   ├── ci.yml
 │   ├── deploy-staging.yml
@@ -385,24 +397,47 @@ docker compose up -d ibgateway
 
 The system implements volatility targeting:
 - Computes 20-day realized volatility
-- Scales positions to maintain target volatility
-- Caps at maximum gross leverage
+- Scales positions to maintain target volatility (12% annual target)
+- Caps at maximum gross leverage (200%)
 
 ### Regime Detection
 
-Monitors SPX/SX5E ratio momentum:
-- **Normal**: Full position sizing
-- **Elevated**: Reduced exposure (VIX > 25)
-- **Crisis**: Emergency de-risk (VIX > 40 or DD > 10%)
+Monitors SPX/SX5E ratio momentum with four regimes:
+
+| Regime | Trigger | Position Scaling |
+|--------|---------|------------------|
+| **NORMAL** | VIX < 25, positive momentum | 100% |
+| **ELEVATED** | VIX > 25 or negative momentum | 50% |
+| **CRISIS** | VIX > 40 or DD > 10% | 25% (emergency de-risk) |
+| **RECOVERY** | Mean-reverting after crisis | Gradual restoration |
 
 ### Tail Hedges
 
-Hedge budget allocated across:
+Hedge budget (2.5% NAV/year) allocated across:
 - **40%**: Equity puts (SPY, FEZ)
 - **20%**: VIX calls
 - **15%**: Credit puts (HYG)
 - **15%**: Sovereign spread (OAT-Bund)
 - **10%**: European bank puts
+
+**Profit-Taking**: Sells 60% of ITM hedges when profitable. Alert triggered at 90% budget usage.
+
+## Stock Screening (Single Name Sleeve)
+
+The `src/stock_screener.py` module implements quantitative stock selection:
+
+### US Longs (Quality Growth)
+Multi-factor scoring:
+- **Quality (50%)**: ROE > 15%, debt/equity < 1, positive earnings growth, strong FCF
+- **Momentum (30%)**: 12-month returns (excluding last month)
+- **Size (20%)**: Market cap > $50B, daily volume > $50M
+
+### EU Shorts (Zombies)
+- **Zombie Score (50%)**: Interest coverage < 3x, negative revenue growth, high debt
+- **Weakness (30%)**: Negative momentum vs Euro STOXX 50
+- **Sector (20%)**: Banks, Autos, Utilities, Industrials preferred
+
+**Rebalancing**: Monthly. Max 5% per single name. Fallback to AAPL, MSFT, GOOGL, NVDA, AMZN if screening fails.
 
 ## Testing
 
@@ -429,6 +464,30 @@ Validation checks:
 - Max drawdown > -15%
 - Order rejection rate < 5%
 - Minimum 50 trades executed
+
+## Health Check Endpoints
+
+The trading engine exposes HTTP health endpoints on port 8080:
+
+| Endpoint | Purpose | Response |
+|----------|---------|----------|
+| `/health` | Liveness check | `{"status": "healthy", "uptime": 12345}` |
+| `/health/detailed` | Component status | IB connection, portfolio age, mode |
+| `/health/ib` | IB Gateway status | Connection state, last heartbeat |
+
+Used by external uptime monitors (e.g., UptimeRobot, Healthchecks.io).
+
+## Cross-Server Monitoring
+
+The `scripts/cross_monitor.py` implements automated server health monitoring with graduated escalation:
+
+| Failure Count | Action |
+|---------------|--------|
+| 1-3 | Restart Docker containers |
+| 4-6 | Reboot entire server |
+| 7+ | Alert and wait for manual intervention |
+
+Runs on standby server, monitors primary via `/health` endpoint.
 
 ## Monitoring & Alerts
 
@@ -553,7 +612,7 @@ Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 ### Pinned Versions
 
 **Docker Images:**
-- `heshiming/ibga:latest` (actively maintained, auto-updated)
+- `heshiming/ibga:latest` (only tag available - no versioned releases)
 - `postgres:14-alpine`
 - `prom/prometheus:v2.54.1`
 - `prom/alertmanager:v0.27.0`

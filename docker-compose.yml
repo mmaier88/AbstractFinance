@@ -73,6 +73,7 @@ services:
       - ./logs:/app/logs
     ports:
       - "8080:8080"  # Health check endpoint for uptime monitoring
+      - "8000:8000"  # Prometheus metrics endpoint
     networks:
       - trading-network
 

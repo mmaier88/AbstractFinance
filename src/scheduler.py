@@ -31,6 +31,21 @@ try:
 except ImportError:
     ALERTS_AVAILABLE = False
 
+try:
+    from .metrics import (
+        start_metrics_server,
+        update_ib_connection_state,
+        update_portfolio_metrics,
+        update_risk_metrics,
+        record_order_submitted,
+        record_order_filled,
+        record_order_rejected,
+        record_scheduler_run,
+    )
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
 
 class DailyScheduler:
     """
@@ -634,6 +649,11 @@ class ContinuousScheduler:
         # Start health check server for external monitoring
         health_server = start_health_server(port=8080)
         print("Health check server running on port 8080")
+
+        # Start Prometheus metrics server
+        if METRICS_AVAILABLE:
+            start_metrics_server(port=8000)
+            print("Prometheus metrics server running on port 8000")
 
         # Wait for IB Gateway to be ready on startup
         if not self._wait_for_ib_gateway():
