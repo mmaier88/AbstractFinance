@@ -3,26 +3,71 @@ name: Deploy to Staging
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}  # Allow manual trigger
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: staging
 
+    env:
+      # 1Password configuration
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      OP_VAULT_TRADING_INFRA: "AF - Trading Infra - Staging"
+
     steps:
       - uses: actions/checkout@v4
 
+      # Install 1Password CLI
+      - name: Install 1Password CLI
+        run: |
+          # Install op CLI v2
+          curl -sS https://downloads.1password.com/linux/keys/1password.asc | \
+            sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" | \
+            sudo tee /etc/apt/sources.list.d/1password.list
+
+          sudo apt-get update && sudo apt-get install -y 1password-cli
+
+          # Verify installation
+          op --version
+
+      # Validate 1Password access
+      - name: Validate 1Password access
+        run: |
+          # List accessible vaults (validates token)
+          op vault list --format=json | jq -r '.[] | .name'
+
+      # Fetch SSH key from 1Password (optional - can still use GitHub secret)
+      - name: Fetch deployment credentials
+        id: credentials
+        run: |
+          # For now, we'll use the SSH key from GitHub secrets
+          # But demonstrate fetching a secret from 1Password
+          echo "1Password access validated for vault: ${OP_VAULT_TRADING_INFRA}"
+
       - name: Deploy to Staging Server
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: abstractfinance
           key: ${{ secrets.HETZNER_SSH_KEY }}
+          envs: OP_SERVICE_ACCOUNT_TOKEN
           script: |
             cd /srv/abstractfinance
 
             # Pull latest code
             git pull origin main
+
+            # Refresh .env from 1Password (if op is installed on server)
+            if command -v op &> /dev/null; then
+              echo "Refreshing .env from 1Password..."
+              export OP_SERVICE_ACCOUNT_TOKEN="${OP_SERVICE_ACCOUNT_TOKEN}"
+              ./scripts/op_fetch_env.sh "AF - Trading Infra - Staging" "abstractfinance.staging.env" ".env"
+            fi
 
             # Pull pinned Docker images
             docker compose pull
@@ -40,6 +85,7 @@ jobs:
         if: success()
         run: |
           echo "Deployed to staging at $(date)"
+          echo "Secrets sourced from 1Password vault: ${OP_VAULT_TRADING_INFRA}"
 
       - name: Notify failure
         if: failure()

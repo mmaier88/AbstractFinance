@@ -730,6 +730,8 @@ ssh root@94.130.228.55 "cd /srv/abstractfinance && docker compose down"
 | **Operations** | PostgreSQL replication scripts | ✅ Available |
 | **SSL/TLS** | Caddy reverse proxy config | ✅ Available |
 | **Metrics** | Execution metrics (orders/fills/latency) | ✅ Wired |
+| **Secrets** | 1Password Business integration | ✅ Configured |
+| **Secrets** | Service Account + op CLI | ✅ Installed |
 
 ### Pinned Versions
 
@@ -793,6 +795,65 @@ Access: http://94.130.228.55:3000
 - SSH key authentication only (password disabled)
 - Service user `abstractfinance` for all operations
 - Firewall rules restrict IB Gateway ports
+
+### 1Password Secrets Management
+
+**Status**: Configured and ready for migration
+
+The system is set up to use **1Password Business** with Service Accounts for all secrets management. This replaces the `.env` file approach with enterprise-grade security.
+
+**Architecture**:
+```
+┌─────────────────────┐
+│  1Password Cloud    │
+│  (abstractfinance   │
+│   .1password.eu)    │
+└─────────┬───────────┘
+          │
+          │ Service Account Token
+          │
+┌─────────▼───────────┐     ┌─────────────────────┐
+│  GitHub Actions     │     │   Hetzner Servers   │
+│  (CI/CD deploy)     │     │   (op CLI)          │
+└─────────────────────┘     └─────────────────────┘
+```
+
+**Setup Steps**:
+
+1. **Create Vaults** in 1Password Business:
+   - `AF - Trading Infra - Staging` - Paper trading secrets
+   - `AF - Trading Infra - Prod` - Live trading secrets (future)
+   - `AF - Servers & SSH` - SSH keys and server credentials
+
+   See [`infra/1password/vaults-and-groups.md`](infra/1password/vaults-and-groups.md)
+
+2. **Configure Service Account Access**:
+   - Go to 1Password Business Console > Integrations > Service Accounts
+   - Grant vault access to the existing service account
+
+   See [`infra/1password/service-accounts.md`](infra/1password/service-accounts.md)
+
+3. **Add .env content to 1Password**:
+   - Create a Secure Note named `abstractfinance.staging.env`
+   - Paste full `.env` contents in the notes field
+   - Store in `AF - Trading Infra - Staging` vault
+
+4. **Refresh secrets on server**:
+   ```bash
+   export OP_SERVICE_ACCOUNT_TOKEN="ops_eyJ..."
+   ./scripts/op_fetch_env.sh "AF - Trading Infra - Staging" "abstractfinance.staging.env" ".env"
+   ```
+
+**Available Scripts**:
+| Script | Purpose |
+|--------|---------|
+| `scripts/op_validate.sh` | Validate 1Password access |
+| `scripts/op_fetch_secret.sh` | Fetch single secret |
+| `scripts/op_fetch_env.sh` | Fetch full .env file |
+| `scripts/op_bootstrap_server.sh` | Bootstrap new server |
+| `scripts/op_inject_env.sh` | Inject secrets as env vars |
+
+**GitHub Secret**: `OP_SERVICE_ACCOUNT_TOKEN` - Already configured
 
 ## License
 

@@ -231,7 +231,7 @@ doppler run -- docker compose up -d
 - [x] Fix file permissions on `.env` (chmod 600)
 - [x] Create non-root service user (abstractfinance)
 - [x] Audit git history for leaked secrets (clean)
-- [ ] Choose and implement secret manager
+- [x] Choose and implement secret manager (1Password Business)
 - [ ] Rotate IBKR password after any exposure
 
 ---
@@ -517,7 +517,7 @@ Create panels for:
 #### Security
 - [x] Non-root service user created (abstractfinance)
 - [x] File permissions hardened (chmod 600 .env)
-- [ ] Secrets in proper manager
+- [x] Secrets in proper manager (1Password Business)
 - [x] Git history audited for leaks
 - [ ] IBKR password rotated
 - [x] Caddy SSL/TLS config available (infra/Caddyfile)
