@@ -39,6 +39,7 @@ env/
 credentials.env
 config/credentials.env
 secrets/
+CLAUDE.md
 
 # Data files
 data/
