@@ -1,0 +1,240 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "panels": [],
+      "title": "Connection & System Status",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"color": "red", "index": 0, "text": "DISCONNECTED"}}, "type": "value"},
+            {"options": {"1": {"color": "green", "index": 1, "text": "CONNECTED"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_ib_connection_state", "refId": "A"}],
+      "title": "IB Gateway",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"color": "green", "index": 0, "text": "NORMAL"}}, "type": "value"},
+            {"options": {"1": {"color": "yellow", "index": 1, "text": "ELEVATED"}}, "type": "value"},
+            {"options": {"2": {"color": "red", "index": 2, "text": "CRISIS"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_risk_regime", "refId": "A"}],
+      "title": "Risk Regime",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"color": "red", "index": 0, "text": "FAILED"}}, "type": "value"},
+            {"options": {"1": {"color": "green", "index": 1, "text": "SUCCESS"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_scheduler_last_run_success", "refId": "A"}],
+      "title": "Last Run",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_portfolio_nav_usd", "refId": "A"}],
+      "title": "NAV",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": -3}, {"color": "green", "value": 0}]}}},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_portfolio_daily_return_pct", "refId": "A"}],
+      "title": "Daily Return",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 25}, {"color": "red", "value": 35}]}}},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "id": 6,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "abstractfinance_risk_vix_level", "refId": "A"}],
+      "title": "VIX",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "id": 101,
+      "panels": [],
+      "title": "Portfolio Performance",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "id": 10,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [{"expr": "abstractfinance_portfolio_nav_usd", "legendFormat": "NAV", "refId": "A"}],
+      "title": "Portfolio NAV",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "unit": "percent"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "id": 11,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "abstractfinance_portfolio_drawdown_pct", "legendFormat": "Drawdown", "refId": "A"},
+        {"expr": "abstractfinance_portfolio_max_drawdown_pct", "legendFormat": "Max Drawdown", "refId": "B"}
+      ],
+      "title": "Drawdown",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+      "id": 102,
+      "panels": [],
+      "title": "Risk Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "unit": "percent"}},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 15},
+      "id": 20,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "abstractfinance_risk_realized_vol_annual * 100", "legendFormat": "Realized Vol", "refId": "A"},
+        {"expr": "abstractfinance_risk_target_vol_annual * 100", "legendFormat": "Target Vol", "refId": "B"}
+      ],
+      "title": "Volatility",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "unit": "currencyUSD"}},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 15},
+      "id": 21,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "abstractfinance_portfolio_gross_exposure_usd", "legendFormat": "Gross", "refId": "A"},
+        {"expr": "abstractfinance_portfolio_net_exposure_usd", "legendFormat": "Net", "refId": "B"}
+      ],
+      "title": "Exposure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "unit": "percent"}},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 15},
+      "id": 22,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "abstractfinance_hedge_budget_usage_pct", "legendFormat": "Budget Used", "refId": "A"}
+      ],
+      "title": "Hedge Budget Usage",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "id": 103,
+      "panels": [],
+      "title": "Order Execution",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 80}}},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 24},
+      "id": 30,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "increase(abstractfinance_orders_submitted_total[1h])", "legendFormat": "Submitted", "refId": "A"},
+        {"expr": "increase(abstractfinance_orders_filled_total[1h])", "legendFormat": "Filled", "refId": "B"},
+        {"expr": "increase(abstractfinance_orders_rejected_total[1h])", "legendFormat": "Rejected", "refId": "C"}
+      ],
+      "title": "Orders (1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 30}]}}},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 24},
+      "id": 31,
+      "options": {},
+      "targets": [{"expr": "histogram_quantile(0.95, rate(abstractfinance_order_fill_latency_seconds_bucket[1h]))", "legendFormat": "p95 Latency", "refId": "A"}],
+      "title": "Order Fill Latency (p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2}}},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 24},
+      "id": 32,
+      "options": {"legend": {"calcs": [], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "increase(abstractfinance_ib_reconnect_total[1h])", "legendFormat": "Reconnect Attempts", "refId": "A"},
+        {"expr": "increase(abstractfinance_ib_pacing_violations_total[1h])", "legendFormat": "Pacing Violations", "refId": "B"}
+      ],
+      "title": "IB Gateway Events",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["trading", "abstractfinance"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "AbstractFinance Trading Dashboard",
+  "uid": "abstractfinance-trading",
+  "version": 1,
+  "weekStart": ""
+}

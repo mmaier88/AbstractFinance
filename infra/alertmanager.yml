@@ -1,0 +1,35 @@
+global:
+  smtp_smarthost: 'localhost:25'
+  smtp_from: 'alertmanager@abstractfinance.io'
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'telegram'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'telegram-critical'
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: 'telegram'
+    webhook_configs:
+      - url: 'http://trading-engine:8080/alertmanager/webhook'
+        send_resolved: true
+
+  - name: 'telegram-critical'
+    webhook_configs:
+      - url: 'http://trading-engine:8080/alertmanager/webhook'
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']

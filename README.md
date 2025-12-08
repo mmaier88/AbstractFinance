@@ -543,6 +543,12 @@ Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 | **CI/CD** | GitHub Actions with service user | ✅ Implemented |
 | **Maintenance** | Sunday gateway restart cron | ✅ Implemented |
 | **Alerts** | Telegram disconnect notifications | ✅ Implemented |
+| **Monitoring** | Prometheus metrics endpoint | ✅ Implemented |
+| **Monitoring** | Alertmanager with trading-specific rules | ✅ Implemented |
+| **Monitoring** | Grafana dashboard provisioned | ✅ Implemented |
+| **High Availability** | Standby VPS (fsn1 datacenter) | ✅ Provisioned |
+| **High Availability** | WireGuard tunnel between servers | ✅ Active |
+| **High Availability** | Failover procedure documented | ✅ Complete |
 
 ### Pinned Versions
 
@@ -550,6 +556,7 @@ Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 - `heshiming/ibga:latest` (actively maintained, auto-updated)
 - `postgres:14-alpine`
 - `prom/prometheus:v2.54.1`
+- `prom/alertmanager:v0.27.0`
 - `grafana/grafana:11.3.0`
 - `grafana/loki:3.2.0`
 - `grafana/promtail:3.2.0`
@@ -557,6 +564,46 @@ Cron job location: `/etc/cron.d/abstractfinance-maintenance`
 **Python:** `3.11.11-slim`
 
 See `requirements.txt` for pinned Python package versions.
+
+### Monitoring Stack
+
+The system includes a comprehensive monitoring stack:
+
+**Prometheus Metrics** (`src/metrics.py`):
+- IB Gateway connection state and heartbeat
+- Order counts (submitted, filled, rejected) by sleeve
+- Portfolio metrics (NAV, exposure, drawdown)
+- Risk metrics (regime, VIX, volatility)
+- Scheduler status and timing
+
+**Alert Rules** (`infra/alert-rules.yml`):
+| Alert | Trigger | Severity |
+|-------|---------|----------|
+| IBGatewayDisconnected | Connection lost > 2m | Critical |
+| DrawdownCritical | DD > 8% | Critical |
+| CrisisRegime | Regime = 2 | Critical |
+| HighVIX | VIX > 35 | Warning |
+| VeryLargeDailyLoss | Daily < -5% | Critical |
+
+**Grafana Dashboard**:
+- Real-time connection status
+- NAV and drawdown charts
+- Order execution metrics
+- Risk regime visualization
+
+Access: http://94.130.228.55:3000
+
+### High Availability Architecture
+
+**Server Infrastructure**:
+| Role | Hostname | IP | Location | WireGuard IP |
+|------|----------|-----|----------|--------------|
+| Primary | AbstractFinance-staging | 94.130.228.55 | nbg1 | 10.0.0.1 |
+| Standby | abstractfinance-standby | 46.224.46.117 | fsn1 | 10.0.0.2 |
+
+**WireGuard Tunnel**: Active between both servers on UDP 51820
+
+**Failover**: See [docs/FAILOVER.md](docs/FAILOVER.md) for detailed procedure
 
 ### Security Best Practices
 

@@ -98,6 +98,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # Alertmanager (pinned version for stability)
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: always
+    volumes:
+      - ./infra/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - trading-network
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+
   # Prometheus Metrics (pinned version for stability)
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -105,11 +121,14 @@ services:
     restart: always
     volumes:
       - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     networks:
       - trading-network
+    depends_on:
+      - alertmanager
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -173,5 +192,6 @@ volumes:
   ibgateway-settings:
   pgdata:
   prometheus-data:
+  alertmanager-data:
   grafana-data:
   loki-data:

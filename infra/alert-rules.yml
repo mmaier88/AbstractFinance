@@ -1,0 +1,230 @@
+groups:
+  # ==========================================================================
+  # IB Gateway Connection Alerts
+  # ==========================================================================
+  - name: ib_gateway
+    rules:
+      - alert: IBGatewayDisconnected
+        expr: abstractfinance_ib_connection_state == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IB Gateway disconnected"
+          description: "IB Gateway has been disconnected for more than 2 minutes."
+
+      - alert: IBGatewayNoHeartbeat
+        expr: time() - abstractfinance_ib_last_heartbeat_timestamp > 300
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No IB Gateway heartbeat"
+          description: "No heartbeat from IB Gateway for more than 5 minutes."
+
+      - alert: IBPacingViolations
+        expr: rate(abstractfinance_ib_pacing_violations_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "IB API pacing violations detected"
+          description: "Multiple IB API pacing violations in the last 5 minutes."
+
+  # ==========================================================================
+  # Portfolio Risk Alerts
+  # ==========================================================================
+  - name: portfolio_risk
+    rules:
+      - alert: DrawdownWarning
+        expr: abstractfinance_portfolio_drawdown_pct < -5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Portfolio drawdown exceeds 5%"
+          description: "Current drawdown is {{ $value | printf \"%.2f\" }}%"
+
+      - alert: DrawdownCritical
+        expr: abstractfinance_portfolio_drawdown_pct < -8
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Portfolio drawdown exceeds 8%"
+          description: "Current drawdown is {{ $value | printf \"%.2f\" }}%. Consider emergency de-risk."
+
+      - alert: EmergencyDeriskActive
+        expr: abstractfinance_risk_emergency_derisk == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Emergency de-risk activated"
+          description: "The system has triggered emergency de-risk mode."
+
+      - alert: CrisisRegime
+        expr: abstractfinance_risk_regime == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crisis regime detected"
+          description: "Risk regime has escalated to CRISIS level."
+
+      - alert: HighVIX
+        expr: abstractfinance_risk_vix_level > 35
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "VIX elevated above 35"
+          description: "VIX level is {{ $value | printf \"%.1f\" }}"
+
+      - alert: VeryHighVIX
+        expr: abstractfinance_risk_vix_level > 45
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VIX extremely elevated above 45"
+          description: "VIX level is {{ $value | printf \"%.1f\" }}. Crisis conditions likely."
+
+  # ==========================================================================
+  # Daily P&L Alerts
+  # ==========================================================================
+  - name: daily_pnl
+    rules:
+      - alert: LargeDailyLoss
+        expr: abstractfinance_portfolio_daily_return_pct < -3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Large daily loss exceeds 3%"
+          description: "Daily return is {{ $value | printf \"%.2f\" }}%"
+
+      - alert: VeryLargeDailyLoss
+        expr: abstractfinance_portfolio_daily_return_pct < -5
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Very large daily loss exceeds 5%"
+          description: "Daily return is {{ $value | printf \"%.2f\" }}%"
+
+      - alert: LargeDailyGain
+        expr: abstractfinance_portfolio_daily_return_pct > 5
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Large daily gain exceeds 5%"
+          description: "Daily return is {{ $value | printf \"%.2f\" }}%"
+
+  # ==========================================================================
+  # Hedge Budget Alerts
+  # ==========================================================================
+  - name: hedge_budget
+    rules:
+      - alert: HedgeBudgetWarning
+        expr: abstractfinance_hedge_budget_usage_pct > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hedge budget usage above 80%"
+          description: "Hedge budget usage is {{ $value | printf \"%.1f\" }}% of annual allocation."
+
+      - alert: HedgeBudgetCritical
+        expr: abstractfinance_hedge_budget_usage_pct > 95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Hedge budget nearly exhausted"
+          description: "Hedge budget usage is {{ $value | printf \"%.1f\" }}% of annual allocation."
+
+  # ==========================================================================
+  # Order Execution Alerts
+  # ==========================================================================
+  - name: orders
+    rules:
+      - alert: HighOrderRejectionRate
+        expr: >
+          rate(abstractfinance_orders_rejected_total[30m]) /
+          (rate(abstractfinance_orders_submitted_total[30m]) + 0.001) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High order rejection rate"
+          description: "More than 10% of orders are being rejected."
+
+      - alert: NoOrdersExecuted
+        expr: >
+          increase(abstractfinance_orders_filled_total[24h]) == 0
+          and on() (hour() >= 14 and hour() <= 21)
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No orders executed during market hours"
+          description: "No orders have been filled in the last 24 hours during market hours."
+
+  # ==========================================================================
+  # Scheduler Alerts
+  # ==========================================================================
+  - name: scheduler
+    rules:
+      - alert: SchedulerRunFailed
+        expr: abstractfinance_scheduler_last_run_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daily scheduler run failed"
+          description: "The last daily scheduler run did not complete successfully."
+
+      - alert: SchedulerNoRecentRun
+        expr: time() - abstractfinance_scheduler_last_run_timestamp > 90000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No recent scheduler run"
+          description: "No scheduler run in the last 25 hours."
+
+      - alert: SchedulerRunSlow
+        expr: abstractfinance_scheduler_run_duration_seconds > 600
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduler run taking too long"
+          description: "Last scheduler run took {{ $value | printf \"%.0f\" }} seconds."
+
+  # ==========================================================================
+  # Volatility Alerts
+  # ==========================================================================
+  - name: volatility
+    rules:
+      - alert: RealizedVolAboveTarget
+        expr: >
+          abstractfinance_risk_realized_vol_annual >
+          abstractfinance_risk_target_vol_annual * 1.5
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Realized volatility significantly above target"
+          description: "Realized vol ({{ $value | printf \"%.1f\" }}%) is 50% above target."
+
+      - alert: VolScalingMaxed
+        expr: abstractfinance_risk_scaling_factor < 0.3
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Risk scaling factor very low"
+          description: "Scaling factor is {{ $value | printf \"%.2f\" }}, indicating high volatility environment."
