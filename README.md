@@ -798,51 +798,67 @@ Access: http://94.130.228.55:3000
 
 ### 1Password Secrets Management
 
-**Status**: Configured and ready for migration
+**Status**: ACTIVE - All secrets managed via 1Password
 
-The system is set up to use **1Password Business** with Service Accounts for all secrets management. This replaces the `.env` file approach with enterprise-grade security.
+The system uses **1Password Business** with Service Accounts for all secrets management. No plaintext `.env` files are stored in git - the server `.env` is dynamically fetched from 1Password.
 
-**Architecture**:
+**How It Works**:
 ```
 ┌─────────────────────┐
-│  1Password Cloud    │
+│  1Password Cloud    │  ← Source of truth for all secrets
 │  (abstractfinance   │
 │   .1password.eu)    │
 └─────────┬───────────┘
           │
-          │ Service Account Token
+          │ Service Account Token (OP_SERVICE_ACCOUNT_TOKEN)
           │
-┌─────────▼───────────┐     ┌─────────────────────┐
-│  GitHub Actions     │     │   Hetzner Servers   │
-│  (CI/CD deploy)     │     │   (op CLI)          │
+          ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│  GitHub Actions     │────▶│   Hetzner Servers   │
+│  (auto-refresh on   │     │   /srv/.env fetched │
+│   each deploy)      │     │   from 1Password    │
 └─────────────────────┘     └─────────────────────┘
+          │                           │
+          │                           ▼
+          │                 ┌─────────────────────┐
+          │                 │  Docker Compose     │
+          │                 │  reads .env file    │
+          └────────────────▶│  injects into       │
+                            │  containers         │
+                            └─────────────────────┘
 ```
 
-**Setup Steps**:
+**Vaults**:
+| Vault | Purpose | Items |
+|-------|---------|-------|
+| `AF - Trading Infra - Staging` | Paper trading | IBKR creds, DB, Telegram, .env |
+| `AF - Trading Infra - Prod` | Live trading (future) | Empty - ready for production |
 
-1. **Create Vaults** in 1Password Business:
-   - `AF - Trading Infra - Staging` - Paper trading secrets
-   - `AF - Trading Infra - Prod` - Live trading secrets (future)
-   - `AF - Servers & SSH` - SSH keys and server credentials
+**Items in Staging Vault**:
+| Item | Type | Usage |
+|------|------|-------|
+| `ibkr.staging` | Login | IBKR username/password |
+| `ibkr.staging.totp-key` | Password | TOTP secret for headless 2FA |
+| `db.staging.password` | Password | PostgreSQL password |
+| `grafana.admin.password` | Password | Grafana admin |
+| `telegram.bot-token` | API Credential | Telegram alerts |
+| `telegram.chat-id` | Password | Telegram chat ID |
+| `hetzner.ssh-key.staging` | Secure Note | SSH private + public key |
+| `abstractfinance.staging.env` | Secure Note | Complete .env file |
 
-   See [`infra/1password/vaults-and-groups.md`](infra/1password/vaults-and-groups.md)
+**Manual Refresh** (if needed):
+```bash
+# On server
+export OP_SERVICE_ACCOUNT_TOKEN="ops_eyJ..."
+op read "op://AF - Trading Infra - Staging/abstractfinance.staging.env/notesPlain" > /srv/abstractfinance/.env
+chmod 600 /srv/abstractfinance/.env
+docker compose down && docker compose up -d
+```
 
-2. **Configure Service Account Access**:
-   - Go to 1Password Business Console > Integrations > Service Accounts
-   - Grant vault access to the existing service account
-
-   See [`infra/1password/service-accounts.md`](infra/1password/service-accounts.md)
-
-3. **Add .env content to 1Password**:
-   - Create a Secure Note named `abstractfinance.staging.env`
-   - Paste full `.env` contents in the notes field
-   - Store in `AF - Trading Infra - Staging` vault
-
-4. **Refresh secrets on server**:
-   ```bash
-   export OP_SERVICE_ACCOUNT_TOKEN="ops_eyJ..."
-   ./scripts/op_fetch_env.sh "AF - Trading Infra - Staging" "abstractfinance.staging.env" ".env"
-   ```
+**Updating Secrets**:
+1. Edit the item in 1Password (web or desktop app)
+2. If changing .env values, also update the `abstractfinance.staging.env` Secure Note
+3. Re-run the manual refresh command above, or trigger a GitHub Actions deploy
 
 **Available Scripts**:
 | Script | Purpose |
