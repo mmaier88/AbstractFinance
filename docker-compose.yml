@@ -36,8 +36,9 @@ services:
     networks:
       - trading-network
     healthcheck:
-      # Check IBGA API port 4000
-      test: ["CMD-SHELL", "nc -z localhost 4000 || exit 1"]
+      # Check if IB Gateway API is accepting connections on port 4000
+      # Uses Python since nc/netcat not available in IBGA image
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost',4000)); s.close()\" 2>/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10

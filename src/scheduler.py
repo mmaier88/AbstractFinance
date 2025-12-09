@@ -612,9 +612,11 @@ class ContinuousScheduler:
     # Startup delay to wait for IB Gateway to be ready
     STARTUP_DELAY_SECONDS = 120  # 2 minutes
     # Max retries for initialization failures
-    MAX_INIT_RETRIES = 5
+    MAX_INIT_RETRIES = 10  # Increased from 5 to handle gateway restart cycles
     # Delay between init retries
-    INIT_RETRY_DELAY_SECONDS = 60  # 1 minute
+    INIT_RETRY_DELAY_SECONDS = 90  # Increased from 60 to give gateway more time
+    # Max time to wait for gateway to be API-ready
+    GATEWAY_READY_TIMEOUT_SECONDS = 600  # 10 minutes total budget
 
     def __init__(self):
         self.running = True
@@ -694,13 +696,86 @@ class ContinuousScheduler:
 
         return self.running
 
+    def _check_gateway_api_ready(self, host: str = "ibgateway", port: int = 4000) -> bool:
+        """
+        Check if IB Gateway is truly API-ready (not just accepting connections).
+
+        This is more reliable than just checking if the port is open, because
+        the socat proxy in IBGA accepts connections even when the IB Gateway
+        backend isn't authenticated yet.
+
+        Returns:
+            True if gateway API is responding, False otherwise
+        """
+        try:
+            from ib_insync import IB
+            ib = IB()
+            # Use a short timeout and test client ID
+            ib.connect(host=host, port=port, clientId=99, timeout=15, readonly=True)
+            if ib.isConnected():
+                # Try to get account info to verify API is truly ready
+                accounts = ib.managedAccounts()
+                ib.disconnect()
+                if accounts:
+                    print(f"  Gateway API ready - accounts: {accounts}")
+                    return True
+            ib.disconnect()
+            return False
+        except Exception as e:
+            print(f"  Gateway API not ready: {e}")
+            return False
+
+    def _wait_for_gateway_api_ready(self, host: str = "ibgateway", port: int = 4000) -> bool:
+        """
+        Wait for IB Gateway API to be truly ready with timeout.
+
+        Returns:
+            True if gateway becomes API-ready, False if timeout or interrupted
+        """
+        print(f"Checking if IB Gateway API is ready (timeout: {self.GATEWAY_READY_TIMEOUT_SECONDS}s)...")
+
+        start_time = time.time()
+        check_interval = 30  # Check every 30 seconds
+
+        while self.running:
+            elapsed = time.time() - start_time
+            if elapsed >= self.GATEWAY_READY_TIMEOUT_SECONDS:
+                print(f"  Timeout waiting for gateway API after {elapsed:.0f}s")
+                return False
+
+            if self._check_gateway_api_ready(host, port):
+                print(f"  Gateway API ready after {elapsed:.0f}s")
+                return True
+
+            remaining = self.GATEWAY_READY_TIMEOUT_SECONDS - elapsed
+            print(f"  Gateway not ready, retrying in {check_interval}s ({remaining:.0f}s remaining)...")
+
+            # Wait before next check
+            wait_remaining = check_interval
+            while wait_remaining > 0 and self.running:
+                time.sleep(min(5, wait_remaining))
+                wait_remaining -= 5
+
+        return False
+
     def _run_daily_with_retries(self) -> bool:
         """
         Run the daily job with retries on initialization failure.
 
+        First waits for IB Gateway API to be truly ready (not just accepting
+        connections), then attempts initialization with retries.
+
         Returns:
             True if successful, False otherwise
         """
+        # First, wait for gateway API to be ready before any init attempts
+        # This prevents wasting retries on a gateway that's still restarting
+        if not self._wait_for_gateway_api_ready():
+            print("Gateway API not ready after timeout, skipping today's run")
+            get_health_server().update_ib_status(False)
+            self.last_run_date = date.today()  # Mark as attempted to prevent retry loop
+            return False
+
         for attempt in range(1, self.MAX_INIT_RETRIES + 1):
             print(f"Initialization attempt {attempt}/{self.MAX_INIT_RETRIES}")
 
