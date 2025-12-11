@@ -1,48 +1,46 @@
 services:
   # IB Gateway Container (headless with TOTP automation)
-  # Using IBGA (heshiming/ibga) for fully automated 2FA login
+  # Using heshiming/ibga for native TOTP support
   # Docs: https://heshiming.github.io/ibga/
   ibgateway:
     image: heshiming/ibga:latest
     container_name: ibgateway
     restart: always
     environment:
-      - TZ=Europe/Berlin
       # IBKR credentials
       - IB_USERNAME=${IBKR_USERNAME}
       - IB_PASSWORD=${IBKR_PASSWORD}
-      # TOTP secret for fully automated 2FA (no phone tap required)
+      # TOTP secret for fully automated 2FA
       - TOTP_KEY=${IBKR_TOTP_KEY}
-      # Region and timezone
-      - IB_REGION=europe
+      # Timezone
       - IB_TIMEZONE=Europe/Berlin
-      # Login tab: IB API (not FIX CTCI which requires special access)
+      # API type
       - IB_LOGINTAB=IB API
-      # Login type: paper or live
-      - IB_LOGINTYPE=${TRADING_MODE:-paper}
-      # Auto logoff before IBKR maintenance window (Sunday night)
-      - IB_LOGOFF=11:55 PM Europe/Berlin
-      # API and logging settings
-      - IB_APILOG=data
-      - IB_LOGLEVEL=INFO
+      # Trading mode: Paper Trading or Live Trading
+      - IB_LOGINTYPE=${TRADING_MODE:-Paper Trading}
+      # Region
+      - IB_REGION=Europe
+      # Daily logoff time (IBKR requires daily restart)
+      - IB_LOGOFF=11:55 PM
+      # API logging
+      - IB_APILOG=true
+      - IB_LOGLEVEL=Detail
+      # VNC password
+      - IBGA_VNC_PASSWORD=trading123
     ports:
-      # IBGA uses port 4000 for API (socat proxy to internal port 9000)
-      - "4000:4000"  # IBGA API port
+      # IBGA uses port 4000 for API (maps to internal 9000)
+      - "4000:4000"  # API port
       - "5900:5900"  # VNC (for debugging)
-      - "6080:5800"  # noVNC web interface (internal port 5800)
     volumes:
-      - ibgateway-data:/home/ibg
-      - ibgateway-settings:/home/ibg_settings
+      - ibgateway-data:/home/ibgateway
     networks:
       - trading-network
     healthcheck:
-      # Check if IB Gateway API is accepting connections on port 4000
-      # Uses Python since nc/netcat not available in IBGA image
-      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost',4000)); s.close()\" 2>/dev/null || exit 1"]
+      test: ["CMD", "nc", "-z", "localhost", "4000"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 180s
+      start_period: 300s
 
   # Trading Engine
   trading-engine:
@@ -59,7 +57,7 @@ services:
     environment:
       - MODE=${MODE:-paper}
       - IBKR_HOST=ibgateway
-      # IBGA exposes API on port 4000 (both paper and live, determined by IB_LOGINTYPE)
+      # IBGA exposes port 4000 for API
       - IBKR_PORT=4000
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -191,7 +189,6 @@ networks:
 
 volumes:
   ibgateway-data:
-  ibgateway-settings:
   pgdata:
   prometheus-data:
   alertmanager-data:
