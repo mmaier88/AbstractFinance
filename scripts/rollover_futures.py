@@ -245,7 +245,7 @@ def main():
     parser.add_argument("--exchange", default="CME", help="Exchange (default: CME)")
     parser.add_argument("--execute", action="store_true", help="Execute the rollover (default: dry run)")
     parser.add_argument("--host", default="127.0.0.1", help="IB Gateway host")
-    parser.add_argument("--port", type=int, default=4002, help="IB Gateway port")
+    parser.add_argument("--port", type=int, default=4000, help="IB Gateway port")
     parser.add_argument("--client-id", type=int, default=99, help="Client ID")
 
     args = parser.parse_args()
