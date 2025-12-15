@@ -1,5 +1,18 @@
 # AbstractFinance Failover Procedure
 
+## Quick Start
+
+**Automated failover** (recommended):
+```bash
+./scripts/failover.sh           # Interactive failover
+./scripts/failover.sh --force   # Non-interactive (for emergencies)
+```
+
+**Automated state sync** (run periodically to keep standby warm):
+```bash
+./scripts/sync_state.sh   # Run from primary or standby
+```
+
 ## Server Infrastructure
 
 | Role | Hostname | IP Address | Location | WireGuard IP |
@@ -159,6 +172,24 @@ Restart WireGuard if needed:
 ```bash
 systemctl restart wg-quick@wg0
 ```
+
+## Automated State Sync (Warm Standby)
+
+To keep the standby server ready for fast failover, set up automatic state sync:
+
+```bash
+# On PRIMARY server, add to crontab:
+crontab -e
+
+# Add this line (runs every 4 hours):
+0 */4 * * * /srv/abstractfinance/scripts/sync_state.sh >> /var/log/abstractfinance/state_sync.log 2>&1
+```
+
+This syncs:
+- `state/` directory (portfolio positions, trade history)
+- `.env` file (credentials)
+- Latest code from git
+- Pre-pulls Docker images
 
 ## Automated Health Checks
 
