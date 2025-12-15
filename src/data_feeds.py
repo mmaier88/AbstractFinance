@@ -256,6 +256,13 @@ class DataFeed:
                 hist = data.history(period="1d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
+                    # Convert GBX (pence) to GBP for GBP-denominated UK stocks
+                    # Yahoo Finance returns some UK stocks in pence, not pounds
+                    # Check if this is a GBP-denominated instrument
+                    spec = self._instruments.get(instrument_id)
+                    if spec and spec.currency == 'GBP' and yf_ticker.endswith('.L'):
+                        # GBP stocks on LSE are quoted in pence on Yahoo
+                        price = price / 100.0
             except Exception:
                 pass
 
