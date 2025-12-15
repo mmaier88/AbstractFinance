@@ -114,6 +114,7 @@ AbstractFinance/
 │   ├── execution_ibkr.py      # IBKR via ib_insync (810 lines)
 │   ├── reconnect.py           # Watchdog, heartbeat, auto-reconnect
 │   ├── scheduler.py           # Continuous loop orchestrator (713 lines)
+│   ├── futures_rollover.py    # Automatic futures rollover detection & execution
 │   ├── stock_screener.py      # Multi-factor stock selection (589 lines)
 │   ├── backtest.py            # Historical + Monte Carlo (20+ metrics)
 │   ├── paper_trading.py       # 60-day burn-in with validation gates
@@ -127,7 +128,10 @@ AbstractFinance/
 │   ├── restart_gateway.sh     # Sunday maintenance restart
 │   ├── cross_monitor.py       # Cross-server auto-remediation
 │   ├── backup_postgres.sh     # Automated database backups
-│   └── setup_pg_replication.sh # PostgreSQL streaming replication setup
+│   ├── setup_pg_replication.sh # PostgreSQL streaming replication setup
+│   ├── rollover_futures.py    # Manual futures rollover script
+│   ├── failover.sh            # Automated failover to standby server
+│   └── sync_state.sh          # State sync for warm standby
 ├── tests/
 │   ├── test_portfolio.py
 │   ├── test_risk_engine.py
@@ -604,6 +608,55 @@ docker compose restart trading-engine
 ```
 
 Alerts include: disconnects, reconnection status, daily PnL, drawdown warnings.
+
+## Automatic Futures Rollover
+
+The system automatically detects and rolls expiring futures positions before expiry. This eliminates manual intervention for:
+
+### Supported Futures
+
+| Category | Contracts | Expiry Cycle | Rolls/Year |
+|----------|-----------|--------------|------------|
+| **FX** | M6E, 6E, M6B, 6B, M6J, 6J | Quarterly | 4 |
+| **Equity Index** | ES, MES, NQ, MNQ, FESX, FDAX | Quarterly | 4 |
+| **Bonds** | FGBL, FOAT, FBTP, ZN, ZB | Quarterly | 4 |
+| **Volatility** | VX, FVS | **Monthly** | **12** |
+| **CAC** | FCE | Monthly | 12 |
+
+### How It Works
+
+1. **Daily Check**: The scheduler scans positions for contracts expiring within `days_before_expiry` (default: 3)
+2. **Auto-Roll**: Closes the expiring position and opens equivalent position in next contract
+3. **Alerts**: Sends Telegram notification before and after each rollover
+
+### Configuration
+
+In `config/settings.yaml`:
+
+```yaml
+futures_rollover:
+  days_before_expiry: 3    # Roll 3 days before expiry
+  dry_run: false           # Set true to test without executing
+```
+
+### Manual Rollover
+
+For immediate rollover (e.g., if a contract is expiring today):
+
+```bash
+# Dry run (test)
+ssh root@94.130.228.55 "docker exec trading-engine python3 /app/scripts/rollover_futures.py --symbol M6E"
+
+# Execute
+ssh root@94.130.228.55 "docker exec trading-engine python3 /app/scripts/rollover_futures.py --symbol M6E --execute"
+```
+
+### Alternative: Spot FX
+
+For FX hedging specifically, consider using **spot FX** (`EUR.USD` on IDEALPRO) instead of futures:
+- **No expiry** - no rollover needed
+- **Flexible sizing** - not limited to contract sizes
+- **Lower complexity** - no operational overhead
 
 ## Scheduled Maintenance & IBKR Windows
 
