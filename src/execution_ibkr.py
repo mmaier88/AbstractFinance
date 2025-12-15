@@ -342,12 +342,21 @@ class IBClient:
             contract = ib_pos.contract
             instrument_id = self._contract_to_instrument_id(contract)
 
+            multiplier = float(contract.multiplier) if contract.multiplier else 1.0
+
+            # For futures, avgCost includes the multiplier, so we need to extract the raw price
+            # avgCost = price * multiplier for futures, so price = avgCost / multiplier
+            if contract.secType == "FUT" and multiplier > 1:
+                estimated_price = ib_pos.avgCost / multiplier
+            else:
+                estimated_price = ib_pos.avgCost
+
             position = Position(
                 instrument_id=instrument_id,
                 quantity=ib_pos.position,
                 avg_cost=ib_pos.avgCost,
-                market_price=ib_pos.avgCost,  # Will be updated with market data
-                multiplier=float(contract.multiplier) if contract.multiplier else 1.0,
+                market_price=estimated_price,  # Will be updated with market data
+                multiplier=multiplier,
                 currency=contract.currency
             )
 
