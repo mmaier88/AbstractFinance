@@ -25,8 +25,8 @@ services:
       # API logging
       - IB_APILOG=true
       - IB_LOGLEVEL=Detail
-      # VNC password
-      - IBGA_VNC_PASSWORD=trading123
+      # VNC password (set in .env or defaults to trading123)
+      - IBGA_VNC_PASSWORD=${VNC_PASSWORD:-trading123}
     ports:
       # IBGA uses port 4000 for API (maps to internal 9000)
       - "4000:4000"  # API port

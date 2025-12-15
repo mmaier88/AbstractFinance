@@ -24,6 +24,7 @@ from .execution_ibkr import IBClient, ExecutionEngine
 from .reconnect import IBReconnectManager, HealthChecker
 from .logging_utils import setup_logging, TradingLogger, get_trading_logger
 from .healthcheck import start_health_server, get_health_server
+from .futures_rollover import check_and_roll_futures
 
 
 # =============================================================================
@@ -327,6 +328,12 @@ class DailyScheduler:
             self._sync_positions()
             run_summary["steps_completed"].append("sync_positions")
 
+            # Step 2.5: Check for expiring futures and auto-roll
+            if not in_maintenance:
+                rollover_results = self._check_futures_rollover()
+                run_summary["futures_rolled"] = len([r for r in rollover_results if r.success])
+                run_summary["steps_completed"].append("futures_rollover")
+
             # Step 3: Update NAV
             self.portfolio.compute_nav(self.data_feed)
             run_summary["nav"] = self.portfolio.nav
@@ -419,6 +426,52 @@ class DailyScheduler:
             sleeve_weights=self.portfolio.get_sleeve_weights(),
             hedge_budget_used=self.portfolio.hedge_budget_used_ytd
         )
+
+    def _check_futures_rollover(self) -> List:
+        """
+        Check for expiring futures positions and auto-roll them.
+
+        Returns:
+            List of RolloverResult objects
+        """
+        if not self.ib_client or not self.ib_client.is_connected():
+            self.logger.logger.warning("futures_rollover_skipped", reason="IB not connected")
+            return []
+
+        try:
+            # Get settings for rollover
+            settings = load_settings()
+            rollover_config = settings.get('futures_rollover', {})
+            days_before = rollover_config.get('days_before_expiry', 3)
+            dry_run = rollover_config.get('dry_run', False)
+
+            self.logger.logger.info(
+                "futures_rollover_check",
+                days_before=days_before,
+                dry_run=dry_run
+            )
+
+            # Run the rollover check
+            results = check_and_roll_futures(
+                ib=self.ib_client.ib,
+                days_before_expiry=days_before,
+                logger=self.logger,
+                alert_manager=self.alert_manager,
+                dry_run=dry_run
+            )
+
+            return results
+
+        except Exception as e:
+            self.logger.logger.error("futures_rollover_error", error=str(e))
+            if self.alert_manager:
+                self.alert_manager.send_alert(
+                    alert_type="system",
+                    severity="error",
+                    title="Futures Rollover Error",
+                    message=f"Error during futures rollover check: {e}"
+                )
+            return []
 
     def _compute_risk(self) -> RiskDecision:
         """Compute risk decision."""

@@ -75,6 +75,11 @@ alerts:
     daily_gain_pct: 0.05         # Alert if daily gain > 5%
     hedge_budget_usage_pct: 0.90 # Alert if 90% hedge budget used
 
+# Futures Rollover
+futures_rollover:
+  days_before_expiry: 3          # Roll futures 3 days before expiry
+  dry_run: false                 # Set to true to test without executing trades
+
 # Backtest Settings
 backtest:
   start_date: "2010-01-01"

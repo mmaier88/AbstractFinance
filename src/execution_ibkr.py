@@ -344,17 +344,28 @@ class IBClient:
 
             multiplier = float(contract.multiplier) if contract.multiplier else 1.0
 
-            # For futures, avgCost includes the multiplier, so we need to extract the raw price
-            # avgCost = price * multiplier for futures, so price = avgCost / multiplier
+            # For futures, IBKR's avgCost includes the multiplier effect
+            # We need to normalize to per-unit price for consistent market_value calculation
+            # market_value = quantity * market_price * multiplier
+            # So avg_cost and market_price should both be per-unit prices
             if contract.secType == "FUT" and multiplier > 1:
-                estimated_price = ib_pos.avgCost / multiplier
+                normalized_avg_cost = ib_pos.avgCost / multiplier
+                estimated_price = normalized_avg_cost
             else:
+                normalized_avg_cost = ib_pos.avgCost
                 estimated_price = ib_pos.avgCost
+
+            # Handle GBP pence conversion for LSE-listed securities
+            # IBKR may return prices in pence (GBX) instead of pounds (GBP)
+            if contract.currency == 'GBP' and estimated_price > 100:
+                # Most LSE ETFs trade below 100 GBP, so > 100 likely means pence
+                normalized_avg_cost = normalized_avg_cost / 100.0
+                estimated_price = estimated_price / 100.0
 
             position = Position(
                 instrument_id=instrument_id,
                 quantity=ib_pos.position,
-                avg_cost=ib_pos.avgCost,
+                avg_cost=normalized_avg_cost,
                 market_price=estimated_price,  # Will be updated with market data
                 multiplier=multiplier,
                 currency=contract.currency
@@ -364,10 +375,18 @@ class IBClient:
             try:
                 ticker = self.ib.reqMktData(contract, '', False, False)
                 self.ib.sleep(1)
+                market_price = None
                 if ticker.last and ticker.last > 0:
-                    position.market_price = ticker.last
+                    market_price = ticker.last
                 elif ticker.close and ticker.close > 0:
-                    position.market_price = ticker.close
+                    market_price = ticker.close
+
+                if market_price:
+                    # Handle GBP pence conversion
+                    if contract.currency == 'GBP' and market_price > 100:
+                        market_price = market_price / 100.0
+                    position.market_price = market_price
+
                 self.ib.cancelMktData(contract)
             except Exception:
                 pass

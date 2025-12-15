@@ -158,10 +158,12 @@ class DataFeed:
 
     def _get_ib_contract(self, instrument_id: str) -> Optional[Any]:
         """Create IB contract from instrument spec."""
-        if not IB_AVAILABLE or instrument_id not in self._instruments:
+        if not IB_AVAILABLE:
             return None
 
-        spec = self._instruments[instrument_id]
+        spec = self._get_instrument_spec(instrument_id)
+        if not spec:
+            return None
 
         if spec.sec_type == "STK":
             # For European exchanges, use SMART routing with correct primaryExchange
@@ -177,19 +179,23 @@ class DataFeed:
                 return Stock(spec.symbol, 'SMART', spec.currency, primaryExchange=primary)
             return Stock(spec.symbol, spec.exchange, spec.currency)
         elif spec.sec_type == "FUT":
-            # For futures, we need to specify expiry - use front month
-            from datetime import date
-            today = date.today()
-            if today.day > 15:
-                month = today.month + 1
-                year = today.year
-                if month > 12:
-                    month = 1
-                    year += 1
+            # For futures, check if expiry is in the instrument_id (e.g., M6E_20251215)
+            if '_' in instrument_id:
+                expiry = instrument_id.split('_')[1]  # Extract expiry from ID
             else:
-                month = today.month
-                year = today.year
-            expiry = f"{year}{month:02d}"
+                # Calculate front month expiry
+                from datetime import date
+                today = date.today()
+                if today.day > 15:
+                    month = today.month + 1
+                    year = today.year
+                    if month > 12:
+                        month = 1
+                        year += 1
+                else:
+                    month = today.month
+                    year = today.year
+                expiry = f"{year}{month:02d}"
             return Future(spec.symbol, exchange=spec.exchange, lastTradeDateOrContractMonth=expiry)
         elif spec.sec_type == "CASH":
             return Forex(spec.symbol + spec.currency)
@@ -210,9 +216,29 @@ class DataFeed:
         if spec:
             symbol = spec.symbol
         else:
-            symbol = instrument_id
+            # Handle futures with expiry dates (e.g., M6E_20251215 -> M6E)
+            symbol = instrument_id.split('_')[0] if '_' in instrument_id else instrument_id
 
         return self.YFINANCE_MAPPING.get(symbol, symbol)
+
+    def _get_instrument_spec(self, instrument_id: str) -> Optional[InstrumentSpec]:
+        """
+        Get instrument spec, handling futures with expiry dates.
+        E.g., M6E_20251215 will match the M6E config entry.
+        """
+        # Direct match first
+        if instrument_id in self._instruments:
+            return self._instruments[instrument_id]
+
+        # For futures with expiry dates (e.g., M6E_20251215), try base symbol
+        if '_' in instrument_id:
+            base_symbol = instrument_id.split('_')[0]
+            # Search by symbol match
+            for inst_id, spec in self._instruments.items():
+                if spec.symbol == base_symbol:
+                    return spec
+
+        return None
 
     def get_last_price(self, instrument_id: str) -> float:
         """
@@ -231,6 +257,7 @@ class DataFeed:
                 return price
 
         price = None
+        spec = self._get_instrument_spec(instrument_id)
 
         # Try IBKR first
         if self.ib and self.ib.isConnected():
@@ -245,6 +272,14 @@ class DataFeed:
                     elif ticker.close and ticker.close > 0:
                         price = ticker.close
                     self.ib.cancelMktData(contract)
+
+                    # Convert GBX (pence) to GBP for GBP-denominated UK stocks from IBKR
+                    # IBKR may return prices in pence for some LSE-listed securities
+                    if price and spec and spec.currency == 'GBP' and spec.exchange == 'LSE':
+                        # Heuristic: if price > 100 and typical stock price < 50 GBP,
+                        # it's likely in pence. Most LSE ETFs trade < 100 GBP.
+                        if price > 100:
+                            price = price / 100.0
                 except Exception:
                     pass
 
@@ -258,8 +293,6 @@ class DataFeed:
                     price = hist['Close'].iloc[-1]
                     # Convert GBX (pence) to GBP for GBP-denominated UK stocks
                     # Yahoo Finance returns some UK stocks in pence, not pounds
-                    # Check if this is a GBP-denominated instrument
-                    spec = self._instruments.get(instrument_id)
                     if spec and spec.currency == 'GBP' and yf_ticker.endswith('.L'):
                         # GBP stocks on LSE are quoted in pence on Yahoo
                         price = price / 100.0

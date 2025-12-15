@@ -165,8 +165,8 @@ IBKR_ACCOUNT_ID=U23203300
 IBKR_PORT=4004                    # Paper trading via socat relay
 TRADING_MODE=paper
 MODE=paper
-DB_PASSWORD=AbstractFinance_Staging_2024!
-GRAFANA_PASSWORD=AbstractFinance_Grafana_2024!
+DB_PASSWORD=<from 1Password>
+GRAFANA_PASSWORD=<from 1Password>
 ENVIRONMENT=staging
 ```
 
@@ -178,8 +178,8 @@ IBKR_ACCOUNT_ID=U23203300
 IBKR_PORT=4003                    # Live trading via socat relay
 TRADING_MODE=live
 MODE=live
-DB_PASSWORD=AbstractFinance_Prod_2024_Secure!
-GRAFANA_PASSWORD=AbstractFinance_Grafana_Prod_2024!
+DB_PASSWORD=<from 1Password>
+GRAFANA_PASSWORD=<from 1Password>
 ENVIRONMENT=production
 ```
 

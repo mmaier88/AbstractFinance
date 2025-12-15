@@ -288,7 +288,7 @@ The TOTP key is a 32-character Base32 secret obtained when setting up Mobile Aut
 2. Go to **Settings → Security → Secure Login System**
 3. Enable **Mobile Authenticator** (IB Key app)
 4. When shown the QR code, click "Can't scan?" to reveal the secret key
-5. Copy the 32-character secret (e.g., `OCX4MH5ZPKBNEGZ3A7YQP6KTHYTUDBFT`)
+5. Copy the 32-character secret (e.g., `JBSWY3DPEHPK3PXPEXAMPLEKEY1234`)
 6. Save this as `IBKR_TOTP_KEY` in your `.env` file
 
 **Note**: You can verify your TOTP key works with:
