@@ -966,11 +966,13 @@ class DailyScheduler:
         ENGINE_FIX_PLAN Phase 9: Includes pre-execution safety checks.
         """
         # ENGINE_FIX_PLAN Phase 9: Pre-execution safety checks
-        safety_passed, safety_reason = check_execution_safety(
-            portfolio=self.portfolio,
-            orders=orders,
-            settings=self.settings
+        safety_passed, safety_reasons = check_execution_safety(
+            portfolio_state=self.portfolio,
+            fx_rates_valid=self.fx_rates_valid,
+            vol_estimate_valid=True,  # TODO: Add proper vol validation
+            exchange="EU"  # Primary focus is European markets
         )
+        safety_reason = "; ".join(safety_reasons) if safety_reasons else ""
 
         if not safety_passed:
             self.logger.log_alert(

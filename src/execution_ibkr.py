@@ -350,7 +350,10 @@ class IBClient:
 
     def get_positions(self) -> Dict[str, Position]:
         """
-        Get current positions.
+        Get current positions with real-time market prices.
+
+        Uses ib.portfolio() which provides real-time prices from the broker
+        without requiring a market data subscription.
 
         Returns:
             Dict mapping instrument_id to Position
@@ -359,60 +362,46 @@ class IBClient:
             raise ConnectionError("Not connected to IB Gateway")
 
         positions = {}
-        ib_positions = self.ib.positions()
 
-        for ib_pos in ib_positions:
-            contract = ib_pos.contract
+        # Use portfolio() for real-time prices (no subscription needed)
+        # PortfolioItem contains: contract, position, marketPrice, marketValue,
+        # averageCost, unrealizedPNL, realizedPNL, account
+        portfolio_items = self.ib.portfolio()
+
+        for item in portfolio_items:
+            contract = item.contract
             instrument_id = self._contract_to_instrument_id(contract)
 
             multiplier = float(contract.multiplier) if contract.multiplier else 1.0
 
-            # For futures, IBKR's avgCost includes the multiplier effect
-            # We need to normalize to per-unit price for consistent market_value calculation
-            # market_value = quantity * market_price * multiplier
-            # So avg_cost and market_price should both be per-unit prices
+            # Get prices from portfolio item (real-time from broker)
+            avg_cost = item.averageCost
+            market_price = item.marketPrice
+
+            # For futures, IBKR's costs include multiplier effect - normalize
             if contract.secType == "FUT" and multiplier > 1:
-                normalized_avg_cost = ib_pos.avgCost / multiplier
-                estimated_price = normalized_avg_cost
-            else:
-                normalized_avg_cost = ib_pos.avgCost
-                estimated_price = ib_pos.avgCost
+                avg_cost = avg_cost / multiplier
+                market_price = market_price / multiplier if market_price else avg_cost
 
             # Handle GBP pence conversion for LSE-listed securities
-            # IBKR may return prices in pence (GBX) instead of pounds (GBP)
-            if contract.currency == 'GBP' and estimated_price > 100:
-                # Most LSE ETFs trade below 100 GBP, so > 100 likely means pence
-                normalized_avg_cost = normalized_avg_cost / 100.0
-                estimated_price = estimated_price / 100.0
+            if contract.currency == 'GBP':
+                if avg_cost > 100:
+                    avg_cost = avg_cost / 100.0
+                if market_price and market_price > 100:
+                    market_price = market_price / 100.0
+
+            # Fallback to avgCost if no market price
+            if not market_price or market_price <= 0:
+                market_price = avg_cost
 
             position = Position(
                 instrument_id=instrument_id,
-                quantity=ib_pos.position,
-                avg_cost=normalized_avg_cost,
-                market_price=estimated_price,  # Will be updated with market data
+                quantity=item.position,
+                avg_cost=avg_cost,
+                market_price=market_price,
                 multiplier=multiplier,
                 currency=contract.currency
             )
-
-            # Try to get current market price
-            try:
-                ticker = self.ib.reqMktData(contract, '', False, False)
-                self.ib.sleep(1)
-                market_price = None
-                if ticker.last and ticker.last > 0:
-                    market_price = ticker.last
-                elif ticker.close and ticker.close > 0:
-                    market_price = ticker.close
-
-                if market_price:
-                    # Handle GBP pence conversion
-                    if contract.currency == 'GBP' and market_price > 100:
-                        market_price = market_price / 100.0
-                    position.market_price = market_price
-
-                self.ib.cancelMktData(contract)
-            except Exception:
-                pass
 
             positions[instrument_id] = position
 

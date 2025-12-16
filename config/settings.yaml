@@ -149,11 +149,13 @@ crisis:
 # Paper Trading Burn-In
 burn_in_days: 60
 
-# Schedule
+# Schedule - Run during EU market hours for best liquidity
+# EU markets: 8:00-16:30 UTC (9:00-17:30 CET)
+# 9:00 UTC = 10:00 CET - good liquidity, markets settled after open
 schedule:
-  run_hour_utc: 6
+  run_hour_utc: 9
   run_minute_utc: 0
-  timezone: "America/New_York"
+  timezone: "Europe/Berlin"
 
 # IBKR Connection
 ibkr:
@@ -221,7 +223,7 @@ execution_phase2:
   # ---------------------------------------------------------------------------
   session_scheduler:
     enabled: true
-    precompute_time_utc: "06:00"        # Daily precompute at 06:00 UTC
+    precompute_time_utc: "09:00"        # Daily precompute at 09:00 UTC (EU market hours)
     poll_interval_seconds: 30           # Check for executable jobs every 30s
     job_persistence_path: "state/execution_jobs.json"
 
