@@ -20,6 +20,161 @@ The core thesis: Europe faces structural headwinds (demographics, energy depende
 
 ---
 
+## Design Rationale: Why Each Sleeve Exists
+
+This section explains the **reasoning** behind each design choice. Every sleeve has a specific job, and understanding these jobs prevents dangerous modifications.
+
+### The Core Problem: Crash Correlation
+
+**Why can't we just go long US / short EU and collect insurance payoff?**
+
+During normal markets, US and EU equities have ~0.70 correlation. But in a crash, correlation spikes to **~0.95**. This means:
+
+- If SX5E drops 30%, SPY likely drops 25%
+- Your "long US / short EU" trade might make 5% on a massive move
+- That's not insurance—that's a small alpha bet
+
+**The key insight:** Equity L/S is an alpha-generation strategy, NOT an insurance strategy. We need *something else* to provide convex payoff in stress.
+
+### Why We Changed Core Index RV: 35% → 20%
+
+**Old thinking:** "More equity L/S = more exposure to US outperformance thesis"
+
+**New thinking:** Core Index RV's job is to express a *directional view* on US vs EU at the index level. It's clean, liquid, and low-cost. But it has two problems:
+
+1. **Crash correlation:** Won't reliably pay off when we need it most
+2. **Thesis bleed:** When EU cyclically outperforms, this sleeve just bleeds
+
+We reduced it from 35% to 20% because we realized it's an **alpha sleeve, not an insurance sleeve**. The capital freed up went to Europe Vol Convexity—which *does* pay off in stress.
+
+### Why Sector RV is Factor-Neutral (Not Just "More Equity L/S")
+
+This is the most misunderstood design choice. Let's be precise:
+
+**What "reducing Core Index RV" does:**
+- Less notional in CSPX long / CS51 short
+- Less total US vs EU bet
+- Still a clean regional exposure
+
+**What "factor-neutral Sector RV" does:**
+- Same amount of regional exposure
+- BUT removes hidden factor bets (growth vs value, duration sensitivity)
+- Isolates the *regional* signal from *style* signals
+
+**Why this matters—a concrete example:**
+
+Suppose EU banks rally 40% in a risk-on move. Your Sector RV sleeve is:
+- Long US Tech (growth, high duration)
+- Short EU Banks (value, low duration, financial sector)
+
+Without factor neutralization, you're actually running:
+- Long growth, short value
+- Long duration, short duration
+- Long US, short EU
+- Long tech, short financials
+
+When EU banks rally, you lose money. But is that loss from your *regional thesis* or from your hidden *value vs growth* bet? You can't tell.
+
+**The sanity check question:** "If European banks rally 40% in a cyclical upturn, should your fund lose money?"
+
+- If the answer is "yes, I want that short-banks exposure" → leave it
+- If the answer is "no, I'm supposed to be long US vs EU, not short banks specifically" → factor-neutralize
+
+We chose factor-neutral because our thesis is "US outperforms EU" not "growth outperforms value" or "tech outperforms financials."
+
+### Why Europe Vol Convexity is the PRIMARY Insurance Channel
+
+**The problem it solves:** Equity L/S doesn't provide reliable crisis payoff due to crash correlation.
+
+**The solution:** Buy volatility directly. When European stress hits:
+- VSTOXX spikes from 18 → 45+ (150%+ move)
+- SX5E puts go from 2% to 15%+ of notional (7x+ payoff)
+- EU bank vol explodes (banking crises are *European* crises)
+
+This sleeve has **negative expected value** in normal times (options decay). But it has **massive positive expected value** conditional on European stress. That's the definition of insurance.
+
+**Why VSTOXX over VIX?**
+- We're insuring against *European* decline
+- VSTOXX rises more than VIX in EU-specific stress (Euro crisis 2011, EU energy crisis 2022)
+- VIX rises more in global stress—but we're not insuring against US problems
+
+### Why Crisis Alpha is Europe-Centric (60% EU / 25% US)
+
+**Old allocation:** ~50% VIX, ~50% SPY puts
+
+**New allocation:** 60% Europe (VSTOXX 30%, SX5E 20%, EU banks 10%), 25% US (VIX 15%, SPY 10%)
+
+**The reasoning:**
+
+If we're building "Insurance for Europeans," we need to ask: what are we insuring against?
+
+1. **EU banking crisis** → VSTOXX spikes, SX7E collapses, EUR weakens
+2. **EU sovereign crisis** → Bund/OAT spreads widen, VSTOXX spikes
+3. **EU energy crisis** → EUR weakens, European equities collapse
+4. **Global risk-off** → VIX spikes, all equities fall
+
+Three of these four scenarios are Europe-specific. The Crisis Alpha sleeve should reflect that. VIX calls are still useful (scenario 4), but they shouldn't dominate.
+
+### Why Trend Filter Exists (Preventing Thesis Bleed)
+
+**The problem:** Our thesis is "US outperforms EU over the cycle." But cycles exist. EU can outperform US for 6-18 months during:
+- Value rotations
+- Dollar weakness periods
+- European cyclical recoveries
+
+During these periods, all three equity sleeves (Core RV, Sector RV, Single Name) bleed. This is expected—but we don't want to bleed at full size.
+
+**The solution:** Scale equity sleeve sizing based on 60-day US vs EU relative momentum:
+
+| Momentum | Sizing | Interpretation |
+|----------|--------|----------------|
+| >= +2% | 100% | Thesis working, full size |
+| 0% to +2% | 75% | Neutral, slightly reduced |
+| -5% to 0% | 50% | Thesis challenged, half size |
+| <= -5% | 25% | Thesis failing, minimal equity |
+| <= -10% | 0% | Options only mode |
+
+This isn't market timing—it's *thesis monitoring*. If US vs EU momentum is deeply negative, either:
+1. Our thesis is wrong (temporarily or permanently)
+2. We're in a cyclical counter-move
+
+Either way, we should reduce equity L/S and let the options carry the insurance load.
+
+### Why Credit & Carry is Regime-Adaptive
+
+**The job:** Generate steady ~7% annual carry from credit spreads and financing.
+
+**The problem:** Credit spreads blow out in stress. If we hold full credit exposure into a crisis, we give back months of carry in days.
+
+**The solution:** Regime-adaptive scaling:
+- NORMAL: 100% allocation
+- ELEVATED: 70% allocation (trimming)
+- CRISIS: 30% allocation (minimal, locked in)
+
+This isn't perfect—we'll miss some spread compression during recoveries. But the asymmetry is favorable: missing 2% upside is better than eating 8% downside.
+
+### Why FX Hedge is PARTIAL (Not FULL)
+
+**Old thinking:** "FX adds noise, hedge it all away"
+
+**New thinking:** USD strength vs EUR is *part of our thesis*. In European stress:
+- EUR weakens as capital flees Europe
+- Our USD-denominated longs appreciate in EUR terms
+- This is free insurance
+
+FULL hedge mode (< 2% residual FX) removes this channel. We use PARTIAL (25% residual) in normal regimes to capture some EUR weakness upside.
+
+**In CRISIS regime:** We switch to NO hedge (100% USD exposure). When Europe is in crisis, we want maximum USD payoff.
+
+### Why Cash Buffer is 10% (Not 0%)
+
+**Three purposes:**
+1. **Margin buffer:** Futures and options require margin. 10% cash prevents margin calls during vol spikes.
+2. **Dry powder:** In a crisis, we want capital to deploy into dislocated assets.
+3. **Rebalancing liquidity:** Avoids forced selling during rebalances.
+
+---
+
 ## Strategy Architecture
 
 ### Investment Channels (Three Pillars)
