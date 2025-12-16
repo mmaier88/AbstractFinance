@@ -6,11 +6,9 @@ Strategy Evolution v2.1: Europe-centric insurance with dynamic EuropeVolEngine.
 """
 
 import logging
-import pandas as pd
-import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from .portfolio import PortfolioState, Sleeve
@@ -23,8 +21,7 @@ from .options.validator import (
 # Strategy Evolution v2.1: Europe Vol Engine integration
 try:
     from .europe_vol import (
-        EuropeVolEngine, VolSignal, ConvexityPosition,
-        VolRegime, TermStructure
+        EuropeVolEngine, VolSignal, VolRegime, TermStructure
     )
     EUROPE_VOL_ENGINE_AVAILABLE = True
 except ImportError:

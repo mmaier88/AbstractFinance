@@ -12,7 +12,6 @@ Strategy Evolution v2.1:
 
 import logging
 import pandas as pd
-import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
@@ -21,17 +20,17 @@ from enum import Enum
 from .portfolio import PortfolioState, Sleeve, Position, InstrumentType
 from .risk_engine import RiskEngine, RiskDecision, RiskRegime
 from .data_feeds import DataFeed
-from .stock_screener import run_screening, get_default_us_universe, get_default_eu_universe
+from .stock_screener import run_screening, get_default_us_universe
 from .logging_utils import get_trading_logger
 from .fx_rates import (
-    FXRates, BASE_CCY, get_fx_rates,
+    FXRates, get_fx_rates,
     compute_net_fx_exposure, compute_fx_hedge_quantities
 )
 
 # Strategy Evolution v2.1: Sector Pairs integration
 try:
     from .sector_pairs import (
-        SectorPairEngine, SectorPairPosition, SectorPair, Sector, SECTOR_PAIRS
+        SectorPairEngine, SectorPairPosition, Sector, SECTOR_PAIRS
     )
     SECTOR_PAIRS_ENGINE_AVAILABLE = True
 except ImportError:
