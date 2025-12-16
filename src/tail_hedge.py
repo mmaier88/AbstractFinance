@@ -1,8 +1,11 @@
 """
 Tail hedge and crisis management for AbstractFinance.
 Manages protective options, sovereign stress trades, and crisis playbook execution.
+
+Strategy Evolution v2.1: Europe-centric insurance with dynamic EuropeVolEngine.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
@@ -16,6 +19,18 @@ from .data_feeds import DataFeed
 from .options.validator import (
     OptionValidator, OptionValidationConfig, OptionQuote, OptionValidationResult
 )
+
+# Strategy Evolution v2.1: Europe Vol Engine integration
+try:
+    from .europe_vol import (
+        EuropeVolEngine, VolSignal, ConvexityPosition,
+        VolRegime, TermStructure
+    )
+    EUROPE_VOL_ENGINE_AVAILABLE = True
+except ImportError:
+    EUROPE_VOL_ENGINE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 class HedgeType(Enum):
@@ -193,6 +208,56 @@ class TailHedgeManager:
             'rejection_reasons': {}
         }
 
+        # =========================================================================
+        # Strategy Evolution v2.1: Europe Vol Engine Integration
+        # =========================================================================
+        self._init_europe_vol_engine()
+
+    def _init_europe_vol_engine(self) -> None:
+        """Initialize EuropeVolEngine for dynamic hedge targeting."""
+        self.europe_vol_engine: Optional[EuropeVolEngine] = None
+        self.use_dynamic_targeting = False
+        self._v2x_history: List[float] = []
+        self._last_vol_signal: Optional[VolSignal] = None
+
+        if not EUROPE_VOL_ENGINE_AVAILABLE:
+            logger.warning("EuropeVolEngine not available - using static hedge allocations")
+            return
+
+        # Check if dynamic targeting is enabled in settings
+        term_structure_settings = self.settings.get('term_structure', {})
+        vol_of_vol_settings = self.settings.get('vol_of_vol', {})
+        vol_regime_settings = self.settings.get('vol_regime', {})
+
+        # Enable if any of the v2.1 settings are present
+        if term_structure_settings.get('enabled', False) or \
+           vol_of_vol_settings.get('enabled', False) or \
+           vol_regime_settings.get('enabled', False):
+            self.use_dynamic_targeting = True
+
+            # Build EuropeVolEngine config from settings
+            engine_config = {
+                # Term structure settings
+                "contango_threshold": term_structure_settings.get('contango_threshold', 0.5),
+                "backwardation_threshold": term_structure_settings.get('backwardation_threshold', -0.5),
+                "zscore_lookback": term_structure_settings.get('zscore_lookback_days', 60),
+
+                # Vol-of-vol settings
+                "vol_of_vol_lookback": vol_of_vol_settings.get('lookback_days', 20),
+                "vol_jump_threshold": vol_of_vol_settings.get('jump_threshold_std', 2.0),
+                "vol_jump_window": vol_of_vol_settings.get('jump_window_days', 3),
+
+                # Vol regime settings
+                "low_vol_threshold": vol_regime_settings.get('low_threshold', 18.0),
+                "elevated_vol_threshold": vol_regime_settings.get('elevated_threshold', 25.0),
+                "crisis_vol_threshold": vol_regime_settings.get('crisis_threshold', 35.0),
+            }
+
+            self.europe_vol_engine = EuropeVolEngine(engine_config)
+            logger.info("EuropeVolEngine initialized with dynamic hedge targeting enabled")
+        else:
+            logger.info("Dynamic hedge targeting disabled - using static allocations")
+
     def initialize_budget(self, nav: float, year_start_nav: Optional[float] = None) -> None:
         """Initialize or reset the hedge budget."""
         self.budget = HedgeBudget(
@@ -200,20 +265,205 @@ class TailHedgeManager:
             nav_at_year_start=year_start_nav or nav
         )
 
+    # =========================================================================
+    # Strategy Evolution v2.1: Dynamic Hedge Targeting
+    # =========================================================================
+
+    def update_v2x_history(self, v2x_level: float) -> None:
+        """
+        Update V2X history for vol-of-vol calculation.
+
+        Should be called daily with current V2X level.
+        """
+        self._v2x_history.append(v2x_level)
+        # Keep 60 days of history
+        if len(self._v2x_history) > 60:
+            self._v2x_history = self._v2x_history[-60:]
+
+    def compute_vol_signal(
+        self,
+        v2x_spot: float,
+        v2x_front: float,
+        v2x_back: float
+    ) -> Optional[VolSignal]:
+        """
+        Compute current vol signal using EuropeVolEngine.
+
+        Args:
+            v2x_spot: Current V2X index level
+            v2x_front: Front month FVS future price
+            v2x_back: Back month FVS future price
+
+        Returns:
+            VolSignal if engine available, None otherwise
+        """
+        if not self.europe_vol_engine:
+            return None
+
+        try:
+            signal = self.europe_vol_engine.compute_signal(
+                v2x_spot=v2x_spot,
+                v2x_front=v2x_front,
+                v2x_back=v2x_back,
+                v2x_history=self._v2x_history if self._v2x_history else None
+            )
+            self._last_vol_signal = signal
+            return signal
+        except Exception as e:
+            logger.error(f"Error computing vol signal: {e}")
+            return None
+
+    def compute_dynamic_hedge_allocation(
+        self,
+        signal: Optional[VolSignal] = None
+    ) -> Dict[HedgeType, float]:
+        """
+        Compute dynamic hedge allocation based on vol signal.
+
+        Strategy Evolution v2.1: Adjusts allocations based on:
+        - Vol regime (LOW/NORMAL/ELEVATED/CRISIS)
+        - Term structure (CONTANGO/FLAT/BACKWARDATION)
+        - Vol-of-vol jump detection
+
+        Args:
+            signal: Current VolSignal (uses cached if not provided)
+
+        Returns:
+            Dict mapping HedgeType to allocation percentage
+        """
+        signal = signal or self._last_vol_signal
+
+        # Fallback to static allocation if no signal
+        if signal is None or not self.use_dynamic_targeting:
+            return self.HEDGE_ALLOCATION.copy()
+
+        # Base allocation (from static)
+        allocation = self.HEDGE_ALLOCATION.copy()
+
+        # Get sizing multiplier from signal (0.5 to 2.0)
+        sizing_mult = signal.sizing_multiplier
+
+        # Adjust based on vol regime
+        regime = signal.vol_regime
+
+        if regime == VolRegime.LOW:
+            # Vol cheap: Increase VSTOXX calls, reduce spreads usage
+            # Size up via multiplier, shift more to EU vol
+            allocation[HedgeType.EU_VOL_CALL] = 0.35 * sizing_mult
+            allocation[HedgeType.EU_EQUITY_PUT] = 0.18
+            allocation[HedgeType.EU_BANK_PUT] = 0.07
+            allocation[HedgeType.US_VOL_CALL] = 0.12
+            allocation[HedgeType.US_EQUITY_PUT] = 0.08
+            allocation[HedgeType.SOVEREIGN_SPREAD] = 0.12
+            allocation[HedgeType.CREDIT_PUT] = 0.03
+
+        elif regime == VolRegime.NORMAL:
+            # Normal: Balanced approach with spreads
+            allocation[HedgeType.EU_VOL_CALL] = 0.28 * sizing_mult
+            allocation[HedgeType.EU_EQUITY_PUT] = 0.20
+            allocation[HedgeType.EU_BANK_PUT] = 0.10
+            allocation[HedgeType.US_VOL_CALL] = 0.15
+            allocation[HedgeType.US_EQUITY_PUT] = 0.10
+            allocation[HedgeType.SOVEREIGN_SPREAD] = 0.10
+            allocation[HedgeType.CREDIT_PUT] = 0.05
+
+        elif regime == VolRegime.ELEVATED:
+            # Elevated: Add tails, increase crisis alpha
+            allocation[HedgeType.EU_VOL_CALL] = 0.32 * sizing_mult
+            allocation[HedgeType.EU_EQUITY_PUT] = 0.22
+            allocation[HedgeType.EU_BANK_PUT] = 0.13
+            allocation[HedgeType.US_VOL_CALL] = 0.12
+            allocation[HedgeType.US_EQUITY_PUT] = 0.08
+            allocation[HedgeType.SOVEREIGN_SPREAD] = 0.08
+            allocation[HedgeType.CREDIT_PUT] = 0.03
+
+        elif regime == VolRegime.CRISIS:
+            # Crisis: Monetize winners, selective re-up
+            # Reduce overall allocation, focus on remaining positions
+            allocation[HedgeType.EU_VOL_CALL] = 0.20 * sizing_mult
+            allocation[HedgeType.EU_EQUITY_PUT] = 0.15
+            allocation[HedgeType.EU_BANK_PUT] = 0.10
+            allocation[HedgeType.US_VOL_CALL] = 0.10
+            allocation[HedgeType.US_EQUITY_PUT] = 0.08
+            allocation[HedgeType.SOVEREIGN_SPREAD] = 0.12
+            allocation[HedgeType.CREDIT_PUT] = 0.05
+
+        # Adjust for term structure
+        if signal.term_structure == TermStructure.CONTANGO:
+            # Vol cheap in futures, increase vol call allocation
+            allocation[HedgeType.EU_VOL_CALL] *= 1.15
+            allocation[HedgeType.US_VOL_CALL] *= 1.10
+        elif signal.term_structure == TermStructure.BACKWARDATION:
+            # Vol expensive, reduce vol calls
+            allocation[HedgeType.EU_VOL_CALL] *= 0.85
+            allocation[HedgeType.US_VOL_CALL] *= 0.90
+
+        # Adjust for vol jump (monetization signal)
+        if signal.vol_jump and signal.should_monetize:
+            # Large vol spike: reduce vol calls (take profits)
+            allocation[HedgeType.EU_VOL_CALL] *= 0.7
+            allocation[HedgeType.US_VOL_CALL] *= 0.7
+            # Shift to equity puts for continued protection
+            allocation[HedgeType.EU_EQUITY_PUT] *= 1.2
+            allocation[HedgeType.EU_BANK_PUT] *= 1.2
+
+        # Normalize to sum to 1.0
+        total = sum(allocation.values())
+        if total > 0:
+            allocation = {k: v / total for k, v in allocation.items()}
+
+        logger.info(
+            f"Dynamic hedge allocation computed: regime={regime.value}, "
+            f"term_structure={signal.term_structure.value}, "
+            f"sizing_mult={sizing_mult:.2f}, vol_jump={signal.vol_jump}"
+        )
+
+        return allocation
+
+    def get_vol_signal_summary(self) -> Dict[str, Any]:
+        """Get summary of current vol signal for metrics/logging."""
+        if not self._last_vol_signal:
+            return {"available": False}
+
+        signal = self._last_vol_signal
+        return {
+            "available": True,
+            "v2x_spot": signal.v2x_spot,
+            "v2x_front": signal.v2x_front,
+            "v2x_back": signal.v2x_back,
+            "term_structure": signal.term_structure.value,
+            "term_spread": signal.term_spread,
+            "term_spread_zscore": signal.term_spread_zscore,
+            "vol_of_vol": signal.vol_of_vol,
+            "vol_jump": signal.vol_jump,
+            "vol_jump_magnitude": signal.vol_jump_magnitude,
+            "vol_regime": signal.vol_regime.value,
+            "should_add_convexity": signal.should_add_convexity,
+            "should_monetize": signal.should_monetize,
+            "structure_preference": signal.structure_preference,
+            "sizing_multiplier": signal.sizing_multiplier
+        }
+
     def ensure_tail_hedges(
         self,
         portfolio_state: PortfolioState,
         data_feed: DataFeed,
-        today: Optional[date] = None
+        today: Optional[date] = None,
+        v2x_data: Optional[Dict[str, float]] = None
     ) -> List[OrderSpec]:
         """
         Ensure adequate tail hedge coverage.
         Creates new hedges or rolls expiring ones as needed.
 
+        Strategy Evolution v2.1: Uses EuropeVolEngine for dynamic allocation
+        when V2X data is available.
+
         Args:
             portfolio_state: Current portfolio state
             data_feed: Data feed for prices
             today: Current date
+            v2x_data: Optional V2X data dict with keys:
+                      'spot', 'front', 'back' for V2X levels
 
         Returns:
             List of orders to execute
@@ -229,6 +479,23 @@ class TailHedgeManager:
         if self.budget.remaining <= 0:
             return orders  # No budget remaining
 
+        # Strategy Evolution v2.1: Compute vol signal if V2X data available
+        if self.use_dynamic_targeting and self.europe_vol_engine:
+            v2x = v2x_data or self._get_v2x_from_data_feed(data_feed)
+            if v2x:
+                self.update_v2x_history(v2x.get('spot', 20.0))
+                signal = self.compute_vol_signal(
+                    v2x_spot=v2x.get('spot', 20.0),
+                    v2x_front=v2x.get('front', v2x.get('spot', 20.0) * 0.98),
+                    v2x_back=v2x.get('back', v2x.get('spot', 20.0) * 1.02)
+                )
+                if signal:
+                    logger.info(
+                        f"Vol signal computed: regime={signal.vol_regime.value}, "
+                        f"term_structure={signal.term_structure.value}, "
+                        f"sizing_mult={signal.sizing_multiplier:.2f}"
+                    )
+
         # Check and roll expiring hedges
         roll_orders = self._check_and_roll_hedges(data_feed, today)
         orders.extend(roll_orders)
@@ -238,6 +505,40 @@ class TailHedgeManager:
         orders.extend(gap_orders)
 
         return orders
+
+    def _get_v2x_from_data_feed(self, data_feed: DataFeed) -> Optional[Dict[str, float]]:
+        """
+        Attempt to get V2X data from data feed.
+
+        Returns None if V2X data unavailable (fallback to static allocation).
+        """
+        try:
+            # Try to get V2X level from data feed
+            if hasattr(data_feed, 'get_v2x_level'):
+                v2x_spot = data_feed.get_v2x_level()
+            elif hasattr(data_feed, 'get_vstoxx_spot'):
+                v2x_spot = data_feed.get_vstoxx_spot()
+            else:
+                return None
+
+            # Try to get futures for term structure
+            v2x_front = v2x_spot * 0.98  # Default: small discount
+            v2x_back = v2x_spot * 1.02   # Default: contango
+
+            if hasattr(data_feed, 'get_vstoxx_futures'):
+                futures = data_feed.get_vstoxx_futures()
+                if futures:
+                    v2x_front = futures.get('front', v2x_front)
+                    v2x_back = futures.get('back', v2x_back)
+
+            return {
+                'spot': v2x_spot,
+                'front': v2x_front,
+                'back': v2x_back
+            }
+        except Exception as e:
+            logger.debug(f"V2X data not available: {e}")
+            return None
 
     def handle_crisis_if_any(
         self,
@@ -349,7 +650,7 @@ class TailHedgeManager:
         data_feed: DataFeed,
         today: date
     ) -> List[OrderSpec]:
-        """Fill gaps in hedge coverage."""
+        """Fill gaps in hedge coverage using dynamic allocation."""
         orders = []
 
         if self.budget is None or self.budget.remaining <= 0:
@@ -364,8 +665,12 @@ class TailHedgeManager:
         total_coverage = sum(coverage.values())
         target_coverage = self.budget.remaining * 0.8  # Use 80% of remaining budget
 
+        # Strategy Evolution v2.1: Use dynamic allocation from EuropeVolEngine
+        # Falls back to static HEDGE_ALLOCATION if engine not available
+        hedge_allocation = self.compute_dynamic_hedge_allocation()
+
         # Fill gaps
-        for hedge_type, target_alloc in self.HEDGE_ALLOCATION.items():
+        for hedge_type, target_alloc in hedge_allocation.items():
             current_alloc = coverage[hedge_type] / total_coverage if total_coverage > 0 else 0
             target_value = target_coverage * target_alloc
 
@@ -921,7 +1226,14 @@ class TailHedgeManager:
             "total_pnl": sum(h.pnl for h in self.active_hedges.values() if h.is_active),
             "by_type": {},
             "budget": None,
-            "validation_stats": self._validation_stats  # Phase D
+            "validation_stats": self._validation_stats,  # Phase D
+            # Strategy Evolution v2.1
+            "dynamic_targeting": {
+                "enabled": self.use_dynamic_targeting,
+                "engine_available": self.europe_vol_engine is not None,
+                "v2x_history_length": len(self._v2x_history)
+            },
+            "vol_signal": self.get_vol_signal_summary()
         }
 
         # Group by type
@@ -942,6 +1254,12 @@ class TailHedgeManager:
                 "used_ytd": self.budget.used_ytd,
                 "remaining": self.budget.remaining,
                 "usage_pct": self.budget.usage_pct
+            }
+
+        # Add current dynamic allocation for comparison
+        if self.use_dynamic_targeting:
+            summary["dynamic_allocation"] = {
+                k.value: round(v, 4) for k, v in self.compute_dynamic_hedge_allocation().items()
             }
 
         return summary

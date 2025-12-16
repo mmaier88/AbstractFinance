@@ -10,7 +10,7 @@ never falls back to Yahoo data.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Dict, Optional, Any, List
 
 # CRITICAL: NO yfinance import allowed in this module
@@ -550,6 +550,205 @@ class EuropeRegimeData:
         except Exception as e:
             logger.warning(f"Failed to calculate EURUSD trend: {e}")
             return None
+
+    # =========================================================================
+    # Strategy Evolution v2.1: VSTOXX Futures for Term Structure
+    # =========================================================================
+
+    def get_vstoxx_spot(self) -> Optional[float]:
+        """
+        Get VSTOXX spot level.
+
+        Alias for get_v2x_level() - provided for EuropeVolEngine compatibility.
+
+        Returns:
+            V2X level or None if unavailable
+        """
+        return self.get_v2x_level()
+
+    def get_vstoxx_futures(self) -> Optional[Dict[str, float]]:
+        """
+        Get VSTOXX Mini Futures (FVS) front and back month prices.
+
+        Used for term structure signal in EuropeVolEngine.
+
+        Returns:
+            Dict with 'front' and 'back' month prices, or None if unavailable
+        """
+        if self.ib_client is None:
+            return None
+
+        try:
+            if hasattr(self.ib_client, 'ib') and self.ib_client.ib is not None:
+                from ib_insync import Future
+
+                ib = self.ib_client.ib
+
+                # Determine current and next expiry months
+                # VSTOXX futures expire on 3rd Wednesday of each month
+                today = date.today()
+
+                # Get front month (current or next month if close to expiry)
+                front_expiry = self._get_fvs_expiry(today, 0)
+                back_expiry = self._get_fvs_expiry(today, 1)
+
+                # Create FVS contracts
+                # FVS = VSTOXX Mini Futures on EUREX
+                front_contract = Future(
+                    symbol='FVS',
+                    exchange='EUREX',
+                    currency='EUR',
+                    lastTradeDateOrContractMonth=front_expiry.strftime('%Y%m')
+                )
+
+                back_contract = Future(
+                    symbol='FVS',
+                    exchange='EUREX',
+                    currency='EUR',
+                    lastTradeDateOrContractMonth=back_expiry.strftime('%Y%m')
+                )
+
+                # Qualify contracts
+                try:
+                    ib.qualifyContracts(front_contract)
+                    ib.qualifyContracts(back_contract)
+                except Exception as e:
+                    logger.warning(f"Failed to qualify FVS contracts: {e}")
+                    return None
+
+                # Request market data
+                front_ticker = ib.reqMktData(front_contract, '', False, False)
+                back_ticker = ib.reqMktData(back_contract, '', False, False)
+
+                ib.sleep(self.timeout_ms / 1000.0)
+
+                front_price = (
+                    front_ticker.last if front_ticker.last and front_ticker.last > 0
+                    else front_ticker.close
+                )
+                back_price = (
+                    back_ticker.last if back_ticker.last and back_ticker.last > 0
+                    else back_ticker.close
+                )
+
+                # Cancel market data
+                ib.cancelMktData(front_contract)
+                ib.cancelMktData(back_contract)
+
+                if front_price and front_price > 0 and back_price and back_price > 0:
+                    result = {
+                        'front': float(front_price),
+                        'back': float(back_price),
+                        'front_expiry': front_expiry.strftime('%Y-%m-%d'),
+                        'back_expiry': back_expiry.strftime('%Y-%m-%d'),
+                    }
+                    logger.debug(
+                        f"VSTOXX futures: front={front_price:.2f} ({front_expiry}), "
+                        f"back={back_price:.2f} ({back_expiry})"
+                    )
+                    return result
+
+                # Partial data
+                if front_price and front_price > 0:
+                    logger.warning("Only front month VSTOXX available")
+                    return {
+                        'front': float(front_price),
+                        'back': float(front_price * 1.02),  # Estimate: ~2% contango
+                        'front_expiry': front_expiry.strftime('%Y-%m-%d'),
+                        'back_expiry': back_expiry.strftime('%Y-%m-%d'),
+                    }
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to get VSTOXX futures: {e}")
+            return None
+
+    def _get_fvs_expiry(self, ref_date: date, months_ahead: int) -> date:
+        """
+        Calculate VSTOXX futures expiry date.
+
+        FVS expires on 3rd Wednesday of the month.
+
+        Args:
+            ref_date: Reference date
+            months_ahead: Number of months ahead (0 = current, 1 = next)
+
+        Returns:
+            Expiry date
+        """
+        # Determine target month
+        target_month = ref_date.month + months_ahead
+        target_year = ref_date.year
+
+        while target_month > 12:
+            target_month -= 12
+            target_year += 1
+
+        # Find 3rd Wednesday
+        # Get first day of month
+        first_day = date(target_year, target_month, 1)
+
+        # Find first Wednesday
+        days_until_wed = (2 - first_day.weekday()) % 7
+        first_wed = first_day + timedelta(days=days_until_wed)
+
+        # 3rd Wednesday is 2 weeks after first Wednesday
+        third_wed = first_wed + timedelta(days=14)
+
+        # If we're past expiry this month, use next month
+        if months_ahead == 0 and ref_date >= third_wed:
+            return self._get_fvs_expiry(ref_date, 1)
+
+        return third_wed
+
+    def get_vstoxx_term_spread(self) -> Optional[float]:
+        """
+        Get VSTOXX term spread (back - front).
+
+        Positive = contango (vol cheap in futures)
+        Negative = backwardation (vol expensive)
+
+        Returns:
+            Term spread in V2X points, or None if unavailable
+        """
+        futures = self.get_vstoxx_futures()
+        if futures is None:
+            return None
+
+        spread = futures['back'] - futures['front']
+        logger.debug(f"VSTOXX term spread: {spread:+.2f} points")
+        return spread
+
+    def get_vstoxx_all(self) -> Dict[str, Any]:
+        """
+        Get all VSTOXX data needed for EuropeVolEngine.
+
+        Returns:
+            Dict with 'spot', 'front', 'back', 'term_spread'
+        """
+        spot = self.get_v2x_level()
+        futures = self.get_vstoxx_futures()
+
+        if futures:
+            return {
+                'spot': spot or futures['front'],  # Use front as proxy if spot unavailable
+                'front': futures['front'],
+                'back': futures['back'],
+                'term_spread': futures['back'] - futures['front'],
+                'front_expiry': futures.get('front_expiry'),
+                'back_expiry': futures.get('back_expiry'),
+            }
+        elif spot:
+            # Estimate futures from spot with typical contango
+            return {
+                'spot': spot,
+                'front': spot * 0.98,  # Front typically at small discount
+                'back': spot * 1.02,   # Back typically at premium
+                'term_spread': spot * 0.04,  # Estimated ~4% contango
+            }
+        else:
+            return {}
 
     def get_all_regime_inputs(self) -> Dict[str, Optional[float]]:
         """

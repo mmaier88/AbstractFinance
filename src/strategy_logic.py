@@ -5,8 +5,12 @@ Implements the European Decline Macro strategy across all sleeves.
 ENGINE_FIX_PLAN Updates:
 - Phase 4: Currency-correct position sizing
 - Phase 5: Portfolio-level FX hedging (central FX book)
+
+Strategy Evolution v2.1:
+- Phase H: Sector Pairs integration for factor-neutral positioning
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
@@ -23,6 +27,17 @@ from .fx_rates import (
     FXRates, BASE_CCY, get_fx_rates,
     compute_net_fx_exposure, compute_fx_hedge_quantities
 )
+
+# Strategy Evolution v2.1: Sector Pairs integration
+try:
+    from .sector_pairs import (
+        SectorPairEngine, SectorPairPosition, SectorPair, Sector, SECTOR_PAIRS
+    )
+    SECTOR_PAIRS_ENGINE_AVAILABLE = True
+except ImportError:
+    SECTOR_PAIRS_ENGINE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -374,6 +389,9 @@ class Strategy:
         # Track last trend filter result for reporting
         self.last_trend_result: Optional[TrendFilterResult] = None
 
+        # Strategy Evolution v2.1: Sector Pairs Engine
+        self._init_sector_pairs_engine()
+
         # Instrument mappings
         self._build_instrument_mappings()
 
@@ -409,6 +427,99 @@ class Strategy:
 
         # EU credit for short
         self.eu_credit = ['ig_ieac', 'hy_ihyg']
+
+    def _init_sector_pairs_engine(self) -> None:
+        """
+        Initialize SectorPairEngine for factor-neutral sector positioning.
+
+        Strategy Evolution v2.1: Replaces static ETF baskets with matched
+        sector pairs (US Banks vs EU Banks, US Tech vs EU Tech, etc.)
+        """
+        self.sector_pair_engine: Optional[SectorPairEngine] = None
+        self.use_sector_pairs = False
+        self._last_sector_pair_positions: List[SectorPairPosition] = []
+
+        if not SECTOR_PAIRS_ENGINE_AVAILABLE:
+            logger.warning("SectorPairEngine not available - using static ETF baskets")
+            return
+
+        # Check if sector pairs enabled in settings
+        sector_pairs_settings = self.settings.get('sector_pairs', {})
+
+        if sector_pairs_settings.get('enabled', False):
+            self.use_sector_pairs = True
+
+            # Map sector names from settings to Sector enum
+            included_sector_names = sector_pairs_settings.get('included_sectors', [
+                'financials', 'technology', 'industrials', 'healthcare'
+            ])
+            included_sectors = []
+            for name in included_sector_names:
+                try:
+                    sector = Sector(name.lower())
+                    included_sectors.append(sector)
+                except ValueError:
+                    logger.warning(f"Unknown sector: {name}")
+
+            # Build engine config from settings
+            engine_config = {
+                "included_sectors": included_sectors if included_sectors else [
+                    Sector.FINANCIALS, Sector.TECHNOLOGY,
+                    Sector.INDUSTRIALS, Sector.HEALTHCARE
+                ],
+                "beta_adjust": sector_pairs_settings.get('beta_adjust', True),
+                "neutralize_growth_value": sector_pairs_settings.get('neutralize_growth_value', True),
+                "max_growth_exposure": sector_pairs_settings.get('max_growth_exposure', 0.1),
+                "max_value_exposure": sector_pairs_settings.get('max_value_exposure', 0.1),
+            }
+
+            self.sector_pair_engine = SectorPairEngine(engine_config)
+            logger.info(
+                f"SectorPairEngine initialized with {len(included_sectors)} sectors: "
+                f"{[s.value for s in included_sectors]}"
+            )
+        else:
+            logger.info("Sector pairs disabled - using static ETF baskets")
+
+    def get_sector_pairs_summary(self) -> Dict[str, Any]:
+        """Get summary of current sector pair positions for metrics/logging."""
+        if not self.use_sector_pairs or not self._last_sector_pair_positions:
+            return {
+                "enabled": self.use_sector_pairs,
+                "engine_available": self.sector_pair_engine is not None,
+                "positions": []
+            }
+
+        positions_summary = []
+        total_net_regional = 0.0
+        total_net_growth = 0.0
+        total_net_value = 0.0
+
+        for pos in self._last_sector_pair_positions:
+            positions_summary.append({
+                "sector": pos.pair.sector.value,
+                "us_symbol": pos.pair.us_symbol,
+                "eu_symbol": pos.pair.eu_symbol,
+                "us_notional": pos.us_notional,
+                "eu_notional": pos.eu_notional,
+                "net_regional": pos.net_regional_exposure,
+                "net_growth": pos.net_growth_exposure,
+                "net_value": pos.net_value_exposure,
+            })
+            total_net_regional += pos.net_regional_exposure
+            total_net_growth += pos.net_growth_exposure
+            total_net_value += pos.net_value_exposure
+
+        return {
+            "enabled": self.use_sector_pairs,
+            "engine_available": True,
+            "positions": positions_summary,
+            "totals": {
+                "net_regional_exposure": total_net_regional,
+                "net_growth_exposure": total_net_growth,
+                "net_value_exposure": total_net_value,
+            }
+        }
 
     def compute_all_sleeve_targets(
         self,
@@ -670,12 +781,32 @@ class Strategy:
     ) -> SleeveTargets:
         """
         Build Sector RV sleeve targets.
-        Long US innovation sectors vs Short EU old-economy sectors.
+
+        Strategy Evolution v2.1: Uses SectorPairEngine for factor-neutral
+        matched sector pairs when enabled. Falls back to static ETF baskets.
         """
         target_weight = self.sleeve_weights[Sleeve.SECTOR_RV]
         target_notional = nav * target_weight * scaling
         notional_per_leg = target_notional / 2
 
+        # Strategy Evolution v2.1: Try sector pairs engine first
+        if self.use_sector_pairs and self.sector_pair_engine:
+            targets = self._build_sector_pair_targets(
+                target_notional, scaling, data_feed
+            )
+            if targets:  # Successfully built targets
+                return SleeveTargets(
+                    sleeve=Sleeve.SECTOR_RV,
+                    target_positions=targets,
+                    target_notional=target_notional,
+                    target_weight=target_weight,
+                    long_notional=notional_per_leg,
+                    short_notional=notional_per_leg
+                )
+            # Fall through to legacy if sector pairs failed
+            logger.warning("Sector pairs targeting failed, falling back to ETF baskets")
+
+        # Legacy: Static ETF basket approach
         targets = {}
 
         # US Long Basket - equal weight across tech/healthcare/quality
@@ -719,6 +850,92 @@ class Strategy:
             long_notional=notional_per_leg,
             short_notional=notional_per_leg
         )
+
+    def _build_sector_pair_targets(
+        self,
+        sleeve_notional: float,
+        scaling: float,
+        data_feed: DataFeed
+    ) -> Optional[Dict[str, int]]:
+        """
+        Build sector RV targets using SectorPairEngine.
+
+        Strategy Evolution v2.1: Factor-neutral matched sector pairs.
+
+        Args:
+            sleeve_notional: Total notional for Sector RV sleeve
+            scaling: Risk scaling factor
+            data_feed: Data feed for prices
+
+        Returns:
+            Dict of instrument_id -> quantity, or None on failure
+        """
+        if not self.sector_pair_engine:
+            return None
+
+        try:
+            # Get current prices for position sizing
+            current_prices = {}
+            for sector, pair in SECTOR_PAIRS.items():
+                try:
+                    current_prices[pair.us_symbol] = data_feed.get_last_price(pair.us_symbol)
+                    current_prices[pair.eu_symbol] = data_feed.get_last_price(pair.eu_symbol)
+                except Exception:
+                    pass
+
+            # Compute positions using engine
+            positions = self.sector_pair_engine.compute_positions(
+                sleeve_nav=sleeve_notional,
+                scaling=scaling,
+                current_prices=current_prices if current_prices else None
+            )
+
+            if not positions:
+                return None
+
+            # Store for reporting
+            self._last_sector_pair_positions = positions
+
+            # Convert to target positions dict
+            targets = {}
+            long_notional = 0.0
+            short_notional = 0.0
+
+            for pos in positions:
+                pair = pos.pair
+
+                # US leg (long)
+                if pos.us_notional > 0:
+                    us_price = current_prices.get(pair.us_symbol)
+                    if us_price and us_price > 0:
+                        us_qty = int(pos.us_notional / us_price)
+                        if us_qty > 0:
+                            inst_id = self._etf_to_instrument_id(pair.us_symbol)
+                            if inst_id:
+                                targets[inst_id] = us_qty
+                                long_notional += pos.us_notional
+
+                # EU leg (short)
+                if pos.eu_notional < 0:
+                    eu_price = current_prices.get(pair.eu_symbol)
+                    if eu_price and eu_price > 0:
+                        eu_qty = int(abs(pos.eu_notional) / eu_price)
+                        if eu_qty > 0:
+                            inst_id = self._etf_to_instrument_id(pair.eu_symbol)
+                            if inst_id:
+                                targets[inst_id] = -eu_qty  # Short
+                                short_notional += abs(pos.eu_notional)
+
+            logger.info(
+                f"Sector pair targets built: {len(positions)} pairs, "
+                f"long ${long_notional:,.0f}, short ${short_notional:,.0f}"
+            )
+
+            return targets if targets else None
+
+        except Exception as e:
+            logger.error(f"Error building sector pair targets: {e}")
+            return None
 
     def _build_single_name_targets(
         self,

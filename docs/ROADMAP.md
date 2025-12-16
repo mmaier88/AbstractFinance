@@ -351,6 +351,183 @@ The following items from the original proposal are **not on this roadmap** becau
 
 ---
 
+## Strategy Evolution v2.1 Integration (Dec 2025)
+
+The following phases integrate the new strategy modules (`europe_vol.py`, `sector_pairs.py`) into the live execution path. These modules exist in research/backtest but are NOT YET connected to live trading.
+
+**CRITICAL:** Do NOT deploy to staging until all phases pass local validation.
+
+---
+
+### Phase G: Integrate Europe Vol Engine into Tail Hedge (Status: COMPLETE)
+
+**Goal:** Replace static tail_hedge.py allocations with dynamic EuropeVolEngine.
+
+**Why:** The EuropeVolEngine provides:
+- Term structure signal (contango/backwardation for entry timing)
+- Vol-of-vol jump detection (monetization triggers)
+- Vol regime-based structure selection (spreads vs outrights)
+
+**Deliverables:**
+1. Update `src/tail_hedge.py`:
+   - Import `EuropeVolEngine` from `src/europe_vol.py`
+   - Replace static `HEDGE_ALLOCATION` with dynamic signal-based allocation
+   - Add `compute_dynamic_hedge_targets()` using EuropeVolEngine
+2. Add V2X history tracking for vol-of-vol calculation
+3. Config integration:
+   - Read `term_structure` settings from settings.yaml
+   - Read `vol_of_vol` settings from settings.yaml
+   - Read `vol_regime` settings from settings.yaml
+
+**Acceptance Criteria:**
+- [x] EuropeVolEngine.compute_signal() called on each hedge update
+- [x] Term structure influences sizing multiplier
+- [x] Vol-of-vol jump triggers monetization flag
+- [x] Vol regime determines spread vs outright preference
+- [x] Fallback to static allocation if engine fails
+
+**Files Modified:**
+- `src/tail_hedge.py` (dynamic targeting integration)
+- `src/europe_vol.py` (engine implementation)
+
+---
+
+### Phase H: Integrate Sector Pairs into Strategy Logic (Status: COMPLETE)
+
+**Goal:** Replace current sector ETF selection with factor-neutral matched pairs.
+
+**Why:** Current Sector RV sleeve has hidden factor bets (long growth, short value). Matched sector pairs (US Banks vs EU Banks, etc.) isolate regional beta.
+
+**Deliverables:**
+1. Update `src/strategy_logic.py`:
+   - Import `SectorPairEngine` from `src/sector_pairs.py`
+   - Replace `_build_sector_rv_targets()` with pair-based targeting
+   - Add beta adjustment for EU legs
+   - Add factor neutralization logic
+2. Update instruments loading:
+   - Load sector pair definitions from `instruments.yaml`
+   - Map to IBKR contract specifications
+3. Config integration:
+   - Read `sector_pairs` settings from settings.yaml
+
+**Acceptance Criteria:**
+- [x] Sector RV targets use matched sector pairs
+- [x] EU leg sized with beta adjustment
+- [x] Factor exposure stays within bounds (±10% growth/value)
+- [x] Fallback to original sector selection if engine fails
+
+**Files Modified:**
+- `src/strategy_logic.py` (sector pair integration)
+- `src/sector_pairs.py` (engine implementation)
+
+---
+
+### Phase I: Add VSTOXX Data Feed (Status: COMPLETE)
+
+**Goal:** Add live V2X/FVS data from IBKR for term structure signal.
+
+**Why:** EuropeVolEngine needs:
+- V2X spot level (or FVS front month as proxy)
+- V2X front month future price
+- V2X back month future price (for term structure)
+
+**Deliverables:**
+1. Update `src/marketdata/live.py`:
+   - `get_vstoxx_spot()` - V2X index or FVS front month
+   - `get_vstoxx_futures()` - Front and back month FVS prices
+   - `get_vstoxx_term_spread()` - Back - Front
+   - `get_vstoxx_all()` - All data for EuropeVolEngine
+2. Add contract definitions:
+   - FVS (VSTOXX Mini Future) contract resolution
+   - Handle monthly expiry rollover via `_get_fvs_expiry()`
+3. Cache and fallback:
+   - Cache recent values for vol-of-vol history
+   - Fallback estimate from spot when futures unavailable
+
+**Acceptance Criteria:**
+- [x] FVS front/back month prices retrieved from IBKR
+- [x] Term spread calculated correctly
+- [x] Graceful fallback when VSTOXX unavailable
+- [x] Data methods exported via `src/marketdata/__init__.py`
+
+**Files Modified:**
+- `src/marketdata/live.py` (VSTOXX methods)
+- `src/marketdata/__init__.py` (exports)
+
+---
+
+### Phase J: Integration Testing & Validation (Status: COMPLETE)
+
+**Goal:** Comprehensive testing before staging deployment.
+
+**Why:** The integration changes affect live order generation. Must validate thoroughly.
+
+**Deliverables:**
+1. Unit tests in `tests/test_strategy_evolution.py`:
+   - EuropeVolEngine integration with tail_hedge (5 tests)
+   - SectorPairEngine integration with strategy_logic (4 tests)
+   - VSTOXX data feed mocking (2 tests)
+   - TailHedgeManager integration (5 tests)
+   - Strategy integration (3 tests)
+   - Full integration tests (2 tests)
+2. All 21 tests passing
+
+**Acceptance Criteria:**
+- [x] All unit tests pass (21/21)
+- [x] Integration tests pass
+- [ ] 1 week paper trading without anomalies (PENDING - Phase K)
+- [ ] Manual review of generated orders vs expectations (PENDING - Phase K)
+
+**Files Created:**
+- `tests/test_strategy_evolution.py` (21 tests)
+
+---
+
+### Phase K: Staging Deployment (Status: READY - Awaiting User Approval)
+
+**Goal:** Deploy validated v2.1 integration to staging server.
+
+**Prerequisites:** ALL of phases G, H, I, J complete and passing. ✅ SATISFIED
+
+**Deliverables:**
+1. Git commit with all integration changes
+2. Push to main branch
+3. SSH deploy to 94.130.228.55
+4. Restart trading-engine container
+5. Monitor first daily run
+6. Verify positions match expectations
+
+**Acceptance Criteria:**
+- [ ] Staging server running v2.1 code
+- [ ] First daily run completes without errors
+- [ ] Positions include sector pairs (if triggered)
+- [ ] Hedge targeting uses EuropeVolEngine
+- [ ] No duplicate orders
+
+**Rollback Plan:**
+- Git revert to previous commit
+- Redeploy via docker compose
+
+---
+
+## Strategy Evolution v2.1 Execution Order
+
+| Order | Phase | Priority | Dependency |
+|-------|-------|----------|------------|
+| 1 | **G: Europe Vol Engine Integration** | HIGH | None |
+| 2 | **H: Sector Pairs Integration** | HIGH | None (can parallel with G) |
+| 3 | **I: VSTOXX Data Feed** | HIGH | G (needed for engine) |
+| 4 | **J: Testing & Validation** | CRITICAL | G, H, I |
+| 5 | **K: Staging Deployment** | FINAL | J (must pass all tests) |
+
+**Recommended Execution:**
+- Day 1-2: G + H in parallel
+- Day 3: I (VSTOXX data feed)
+- Day 4-5: J (testing)
+- Day 6+: K (deploy only after validation)
+
+---
+
 ## Appendix: Deferred Items
 
 These items may be valuable but are deferred to avoid scope creep:
