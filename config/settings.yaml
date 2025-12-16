@@ -419,6 +419,11 @@ europe_vol_convex:
     target_dte_days: 60          # 2-month expiry
     roll_dte_days: 21            # Roll at 21 DTE
     max_premium_pct_budget: 0.40 # Max 40% of sleeve budget per structure
+    # Regime-based adjustments
+    otm_points_normal: 5         # 5 points OTM in normal regime
+    otm_points_elevated: 3       # 3 points OTM in elevated (closer to ATM)
+    spread_width_normal: 10
+    spread_width_elevated: 15    # Wider spread in elevated for more convexity
 
   # SX5E Put Spread Structure
   sx5e:
@@ -427,12 +432,130 @@ europe_vol_convex:
     target_dte_days: 90          # 3-month expiry
     roll_dte_days: 30            # Roll at 30 DTE
     ratio_spread_enabled: true   # Use 1x2 ratio spreads to reduce cost
+    otm_pct_normal: 0.10         # 10% OTM in normal
+    otm_pct_elevated: 0.07       # 7% OTM in elevated (closer)
 
   # EU Banks Stress Hedges (SX7E or bank ETF puts)
   eu_banks:
     put_strike_otm_pct: 0.15     # 15% OTM
     target_dte_days: 60
     roll_dte_days: 21
+
+# =============================================================================
+# STRATEGY EVOLUTION: Term Structure Signal
+# Use VSTOXX contango/backwardation to time entries
+# =============================================================================
+term_structure:
+  enabled: true
+  # Contango = Front < Back (vol futures at premium) = vol is "cheap"
+  # Backwardation = Front > Back (vol futures at discount) = vol is "expensive"
+  contango_threshold: 0.5        # V2X points - consider contango if > 0.5
+  backwardation_threshold: -0.5  # V2X points - consider backwardation if < -0.5
+
+  # Z-score thresholds for entry timing
+  zscore_lookback_days: 60       # Days for z-score calculation
+  add_convexity_zscore: 0.5      # Add convexity when z-score > 0.5 (cheap vol)
+  reduce_convexity_zscore: -1.0  # Reduce when z-score < -1.0 (expensive vol)
+
+  # Actions based on term structure
+  actions:
+    contango_high:               # Contango z-score > 1.5
+      sizing_multiplier: 1.3     # Size up 30%
+      prefer_outrights: true     # Can use outrights (cheaper)
+    contango_normal:             # Contango z-score 0 to 1.5
+      sizing_multiplier: 1.1
+      prefer_outrights: false    # Use spreads
+    flat:                        # Term structure flat
+      sizing_multiplier: 1.0
+      prefer_outrights: false
+    backwardation:               # Backwardation (expensive vol)
+      sizing_multiplier: 0.8     # Size down 20%
+      prefer_outrights: false
+
+# =============================================================================
+# STRATEGY EVOLUTION: Vol-of-Vol Jump Signal
+# Detect large 1-3 day moves in V2X for position adjustment
+# =============================================================================
+vol_of_vol:
+  enabled: true
+  lookback_days: 20              # Days for vol-of-vol calculation
+  jump_window_days: 3            # Window to detect jumps
+  jump_threshold_std: 2.0        # Std devs to consider a "jump"
+
+  # Actions on vol jump
+  actions:
+    upward_jump:                 # V2X jumped up significantly
+      monetize_partial: true     # Take partial profits
+      monetize_fraction: 0.3     # Monetize 30%
+      reentry_delay_days: 5      # Wait 5 days before re-adding
+    downward_jump:               # V2X dropped significantly (vol crush)
+      add_on_weakness: true      # Vol cheap, add positions
+      add_multiplier: 1.2        # Add 20% extra
+
+# =============================================================================
+# STRATEGY EVOLUTION: Vol Regime Classification
+# Different structure selection based on vol level
+# =============================================================================
+vol_regime:
+  # Thresholds (V2X levels)
+  low_vol_threshold: 18.0        # V2X < 18 = LOW regime (vol cheap)
+  elevated_vol_threshold: 25.0   # V2X 18-25 = NORMAL, 25+ = ELEVATED
+  crisis_vol_threshold: 35.0     # V2X > 35 = CRISIS
+
+  # Structure preference by regime
+  structure_by_regime:
+    LOW:                         # Vol is cheap
+      use_outrights: true        # Buy outright calls (cheaper)
+      use_spreads: false
+      add_tails: false
+      sizing_multiplier: 1.3     # Size up
+    NORMAL:                      # Vol is normal
+      use_outrights: false
+      use_spreads: true          # Use spreads to reduce bleed
+      add_tails: false
+      sizing_multiplier: 1.0
+    ELEVATED:                    # Vol is elevated
+      use_outrights: false
+      use_spreads: true
+      add_tails: true            # Add disaster tails
+      sizing_multiplier: 1.2
+    CRISIS:                      # Vol is very high
+      use_outrights: true        # Selective outrights if re-upping
+      use_spreads: false
+      add_tails: false
+      sizing_multiplier: 0.7     # Be selective
+      monetize_winners: true     # Take profits
+
+# =============================================================================
+# STRATEGY EVOLUTION: Factor-Neutral Sector Pairs
+# Same-sector US vs EU pairs to isolate regional beta
+# =============================================================================
+sector_pairs:
+  enabled: true
+  # Sectors to include (must match instruments.yaml sector_pairs)
+  included_sectors:
+    - financials
+    - technology
+    - industrials
+    - healthcare
+    # - energy       # Uncomment to add more sectors
+    # - utilities
+
+  # Position sizing
+  equal_weight_sectors: true     # Equal weight across sectors
+  beta_adjust: true              # Beta-adjust EU leg for market exposure match
+
+  # Factor neutralization
+  neutralize_growth_value: true  # Neutralize growth/value tilt
+  max_growth_exposure: 0.1       # Max 10% growth tilt
+  max_value_exposure: 0.1        # Max 10% value tilt
+
+  # Liquidity constraints
+  min_daily_volume_usd: 1000000  # $1M min daily volume
+  max_spread_bps: 10             # 10bps max spread
+
+  # Rebalance
+  rebalance_threshold: 0.05      # 5% drift triggers rebalance
 
 # =============================================================================
 # STRATEGY EVOLUTION: Factor Neutralization for Sector RV

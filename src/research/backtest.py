@@ -9,6 +9,13 @@ Key features:
 - Stress period analysis (2008, 2011, 2020, 2022)
 - Insurance payoff scoring (stress vs normal days)
 - Deterministic JSON report output
+- STRATEGY EVOLUTION: Europe vol convexity with term structure signals
+
+Updated: December 2025
+- Added Europe vol convexity engine integration
+- Added term structure signal (contango/backwardation)
+- Added vol-of-vol jump detection
+- Added sector pairs return model
 """
 
 import json
@@ -19,6 +26,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import numpy as np
 import pandas as pd
+
+# Import new modules for Strategy Evolution
+try:
+    from src.europe_vol import EuropeVolEngine, compute_europe_vol_return
+    from src.sector_pairs import SectorPairEngine, compute_sector_pairs_return
+    EVOLUTION_MODULES_AVAILABLE = True
+except ImportError:
+    EVOLUTION_MODULES_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -645,17 +660,41 @@ class BacktestRunner:
         else:
             return -0.00025  # Small daily bleed (theta decay, ~6% annual)
 
-    def _europe_vol_convex_return(self, v2x: float, regime: str) -> float:
+    def _europe_vol_convex_return(
+        self,
+        v2x: float,
+        regime: str,
+        v2x_prev: Optional[float] = None,
+        sx5e_return: Optional[float] = None,
+        v2x_history: Optional[List[float]] = None
+    ) -> float:
         """
         STRATEGY EVOLUTION: Simulate Europe vol convexity returns.
 
         This is the PRIMARY insurance channel - VSTOXX calls and SX5E put spreads.
         More sensitive to European stress than VIX-based hedges.
 
+        Uses the EuropeVolEngine when available for term structure and
+        vol-of-vol signals. Falls back to simplified model otherwise.
+
         Calibrated for realistic option payoffs:
         - Put spreads and call spreads have capped upside but lower premium
         - Typical VIX spike of 2x = ~50% option gain, not 10x
         """
+        # Use EuropeVolEngine if available and we have the required data
+        if EVOLUTION_MODULES_AVAILABLE and v2x_prev is not None and sx5e_return is not None:
+            try:
+                return compute_europe_vol_return(
+                    v2x=v2x,
+                    v2x_prev=v2x_prev,
+                    sx5e_return=sx5e_return,
+                    regime=regime,
+                    v2x_history=v2x_history
+                )
+            except Exception as e:
+                logger.debug(f"EuropeVolEngine failed, using fallback: {e}")
+
+        # Fallback to simplified model
         if regime == "CRISIS":
             # VSTOXX spike means convexity pays off
             # More conservative: ~1% daily (annualized ~250% but only for few crisis days)

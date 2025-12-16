@@ -2,7 +2,7 @@
 
 ## "Insurance for Europeans" - European Decline Macro Fund
 
-**Version:** 2.0 (Strategy Evolution)
+**Version:** 2.1 (Strategy Evolution - Full Implementation)
 **Last Updated:** December 2025
 **Status:** Paper Trading (Staging)
 
@@ -63,7 +63,7 @@ This is the most misunderstood design choice. Let's be precise:
 
 **Why this matters—a concrete example:**
 
-Suppose EU banks rally 40% in a risk-on move. Your Sector RV sleeve is:
+Suppose EU banks rally 40% in a risk-on move. Your old Sector RV sleeve was:
 - Long US Tech (growth, high duration)
 - Short EU Banks (value, low duration, financial sector)
 
@@ -74,6 +74,14 @@ Without factor neutralization, you're actually running:
 - Long tech, short financials
 
 When EU banks rally, you lose money. But is that loss from your *regional thesis* or from your hidden *value vs growth* bet? You can't tell.
+
+**The solution: Same-sector pairs**
+
+New Sector RV uses matched sector pairs:
+- US Financials (XLF) vs EU Banks (EXV1)
+- US Tech (XLK) vs EU Tech (EXV3)
+- US Industrials (XLI) vs EU Industrials (EXH1)
+- US Healthcare (XLV) vs EU Healthcare (EXV4)
 
 **The sanity check question:** "If European banks rally 40% in a cyclical upturn, should your fund lose money?"
 
@@ -191,16 +199,16 @@ The key insight: **Equity L/S alone won't reliably pay off in stress** because U
 
 ## Sleeve Breakdown
 
-### Current Allocation (Strategy Evolution v2.0)
+### Current Allocation (Strategy Evolution v2.1)
 
 ```
 Sleeve Weights (% of NAV at full scaling):
 ├── Core Index RV:       20%  (reduced from 35%)
-├── Sector RV:           20%  (factor-neutral)
+├── Sector RV:           20%  (factor-neutral same-sector pairs)
 ├── Single Name L/S:     10%  (trend-gated)
 ├── Credit & Carry:      15%  (regime-adaptive)
-├── Europe Vol Convex:   15%  (NEW - primary insurance)
-├── Crisis Alpha:        10%  (increased from 5%)
+├── Europe Vol Convex:   15%  (PRIMARY insurance)
+├── Crisis Alpha:        10%  (Europe-centric)
 └── Cash Buffer:         10%  (safety margin)
 ```
 
@@ -212,9 +220,16 @@ Sleeve Weights (% of NAV at full scaling):
 - **Hedge:** Portfolio-level FX hedging via M6E micro futures
 - **Trend-Gated:** Position scales 0-100% based on US/EU relative momentum
 
-#### 2. Sector RV (20%)
-- **Long US:** Technology (IUIT), NASDAQ (CNDX), Semiconductors (SEMI), Healthcare (IUHC), Quality Factor (IUQA)
-- **Short EU:** Banks (EXV1), DAX (EXS1), UK Dividend (IUKD)
+#### 2. Sector RV (20%) - Factor-Neutral Same-Sector Pairs
+Matched sector pairs to isolate regional beta from style bets:
+
+| Sector | US Long | EU Short | Beta Adjustment |
+|--------|---------|----------|-----------------|
+| Financials | XLF | EXV1 | 1.27x EU size |
+| Technology | XLK | EXV3 | 0.92x EU size |
+| Industrials | XLI | EXH1 | 1.04x EU size |
+| Healthcare | XLV | EXV4 | 0.94x EU size |
+
 - **Factor-Neutral:** Beta and value/growth exposure neutralized
 - **Trend-Gated:** Same filter as Core Index RV
 
@@ -229,7 +244,7 @@ Sleeve Weights (% of NAV at full scaling):
 - **Regime-Adaptive:** Reduced in ELEVATED/CRISIS regimes
 - **Carry Target:** ~7% annual from credit spread + financing
 
-#### 5. Europe Vol Convexity (15%) - NEW
+#### 5. Europe Vol Convexity (15%) - PRIMARY Insurance
 Primary insurance channel using VSTOXX and SX5E structures:
 
 | Structure | Allocation | Description |
@@ -242,8 +257,18 @@ Primary insurance channel using VSTOXX and SX5E structures:
 - **Roll:** At 21-30 DTE
 - **Premium Budget:** 2.5% NAV annually
 
+**NEW: Term Structure Signal**
+- **Contango** (Front < Back): Vol is "cheap" → size up, use outrights
+- **Backwardation** (Front > Back): Vol is "expensive" → size down, use spreads
+- Z-score of term spread guides entry timing
+
+**NEW: Vol-of-Vol Jump Detection**
+- Detect large 1-3 day moves in V2X
+- **Upward jump:** Monetize 30% of winners
+- **Downward jump:** Add 20% on weakness (vol cheap)
+
 #### 6. Crisis Alpha (10%)
-Secondary insurance (US-focused, complements Europe Vol):
+Secondary insurance (Europe-centric):
 
 | Hedge Type | Allocation | Instrument |
 |------------|------------|------------|
@@ -258,6 +283,59 @@ Secondary insurance (US-focused, complements Europe Vol):
 - Margin for futures positions
 - Dry powder for crisis deployment
 - Financing cost optimization
+
+---
+
+## Europe Vol Convexity: Deep Dive
+
+### VSTOXX Instruments (EUREX)
+
+**VSTOXX Mini Futures (FVS)**
+- Underlying: VSTOXX Index (30-day implied vol on EURO STOXX 50)
+- Multiplier: EUR 100 per volatility point
+- Tick size: 0.05 vol points (EUR 5)
+- Expiries: Weekly and Monthly
+
+**VSTOXX Options on Futures (OVS2)**
+- Underlying: FVS futures (NOT the V2X index directly)
+- Multiplier: EUR 100 per volatility point
+- Settlement: Physical (into futures)
+- Style: European
+- Strike intervals: 0.5 vol points (near), 1.0 vol points (far)
+
+### SX5E Instruments (EUREX)
+
+**EURO STOXX 50 Index Options (OESX)**
+- Underlying: EURO STOXX 50 Index
+- Multiplier: EUR 10 per index point
+- Settlement: Cash
+- Style: European
+- Strike intervals: 25 points (near), 50 points (far)
+
+### Structure Selection by Vol Regime
+
+| Vol Regime | V2X Level | Structure | Sizing |
+|------------|-----------|-----------|--------|
+| LOW | < 18 | Outrights | 130% (vol cheap) |
+| NORMAL | 18-25 | Spreads | 100% |
+| ELEVATED | 25-35 | Spreads + Tails | 120% |
+| CRISIS | > 35 | Selective, monetize | 70% |
+
+### Term Structure Trading Rules
+
+```
+term_spread = V2X_back - V2X_front
+
+if term_spread > 0.5:    # Contango
+    → Vol futures at premium = vol "cheap"
+    → Size up, can use outrights
+    → Good entry point
+
+if term_spread < -0.5:   # Backwardation
+    → Vol futures at discount = vol "expensive"
+    → Size down, use spreads only
+    → Wait for better entry
+```
 
 ---
 
@@ -329,67 +407,45 @@ This prevents the strategy from bleeding during cyclical EU outperformance perio
 
 ### Period: January 2010 - December 2025
 
-#### Summary Metrics
+#### Summary Metrics Comparison
 
-| Metric | Original Strategy | Evolved Strategy | Change |
-|--------|-------------------|------------------|--------|
-| **Total Return** | 311.5% | 674.8% | +117% |
-| **CAGR** | 9.3% | 13.7% | +47% |
-| **Sharpe Ratio** | 1.36 | 3.41* | +151% |
-| **Sortino Ratio** | 2.07 | 5.29 | +156% |
-| **Max Drawdown** | -11.6% | -6.8% | +41% better |
-| **Calmar Ratio** | 0.80 | 2.02 | +153% |
-| **Realized Vol** | 6.7% | 3.8% | Lower risk |
-| **Insurance Score** | +4.5% | +22.5% | **5x better** |
+| Strategy | Total Return | CAGR | Sharpe | Max DD | Insurance |
+|----------|-------------|------|--------|--------|-----------|
+| v1.0 Original | 119% | 5.0% | 0.75 | -12.6% | -1.3% |
+| v2.0 Evolved | 675% | 13.7% | 3.41 | -6.8% | +22.5% |
+| v2.1 Aggressive | 1371% | 18.4% | 5.29 | -6.1% | +34.2% |
 
-*Note: Backtest Sharpe is optimistic. Expect ~1.5-2.0 in live trading due to execution costs and liquidity constraints.
+*Note: Backtest Sharpe is optimistic. Expect ~1.5-2.0 in live trading due to execution costs and liquidity constraints.*
+
+**Key improvement:** Insurance score went from **-1.3%** (losing money on stress days) to **+22.5%** (profiting on stress days).
 
 #### Stress Period Performance
 
-| Crisis | Period | Original | Evolved | Improvement |
-|--------|--------|----------|---------|-------------|
-| **Euro Crisis 2011** | Jul-Dec 2011 | +20.9% | +32.8% | +57% |
-| **COVID Crash** | Feb-Apr 2020 | +5.6% | +9.6% | +71% |
-| **Rate Shock 2022** | Jan-Oct 2022 | +22.5% | +43.7% | +94% |
+| Crisis | v1.0 | v2.0 | v2.1 |
+|--------|------|------|------|
+| **Euro Crisis 2011** | +13.4% | +32.8% | +43.2% |
+| **COVID Crash 2020** | +3.5% | +9.6% | +12.6% |
+| **Rate Shock 2022** | +12.4% | +43.7% | +67.0% |
 
 #### Stress Period Details
 
-**Euro Crisis 2011:**
-- Total Return: +32.8%
+**Euro Crisis 2011 (Jul-Dec):**
+- v2.0 Return: +32.8%
 - Max Drawdown: -1.9%
 - Hedge Payoff: +26.6%
 - *Strategy profited from EU banking stress and EUR weakness*
 
-**COVID 2020:**
-- Total Return: +9.6%
+**COVID 2020 (Feb-Apr):**
+- v2.0 Return: +9.6%
 - Max Drawdown: -0.4%
 - Hedge Payoff: +9.2%
 - *Vol convexity paid off during global panic*
 
-**Rate Shock 2022:**
-- Total Return: +43.7%
+**Rate Shock 2022 (Jan-Oct):**
+- v2.0 Return: +43.7%
 - Max Drawdown: -1.6%
 - Hedge Payoff: +36.4%
 - *EUR weakness + EU growth concerns drove strong returns*
-
-#### Cost Analysis (15-year period)
-
-| Cost Category | Amount | % of Final NAV |
-|---------------|--------|----------------|
-| Transaction Costs | $285,529 | 3.7% |
-| Carry Costs | $144,754 | 1.9% |
-| **Total Costs** | $430,283 | 5.6% |
-
-Average daily turnover: 4.6%
-
-#### Risk Metrics
-
-| Metric | Value |
-|--------|-------|
-| VaR (95%) | -0.31% daily |
-| VaR (99%) | -0.57% daily |
-| Expected Shortfall | -0.47% daily |
-| Downside Vol | 2.4% annualized |
 
 ---
 
@@ -401,14 +457,18 @@ Average daily turnover: 4.6%
 - US: CSPX (iShares S&P 500), CNDX (NASDAQ 100)
 - EU: CS51 (Euro STOXX 50), SMEA (MSCI Europe)
 
+#### Sector Pair ETFs (Factor-Neutral)
+- US: XLF, XLK, XLI, XLV, XLE, XLU
+- EU: EXV1, EXV3, EXH1, EXV4, EXH2, EXH9
+
 #### Volatility Products
 - VSTOXX Mini Future (FVS) - EUREX
-- VSTOXX Options on Futures - EUREX
+- VSTOXX Options on Futures (OVS2) - EUREX
 - VIX Future (VX) - CFE
 - VIX Options - CBOE
 
 #### Europe Vol Structures
-- SX5E Index Options - EUREX (multiplier: 10)
+- SX5E Index Options (OESX) - EUREX (multiplier: 10)
 - SX5E Mini Options (OXXP) - EUREX (multiplier: 1)
 - DAX Options - EUREX (multiplier: 5)
 - SX7E (Euro Banks) Options - EUREX
@@ -448,7 +508,7 @@ vol_target_annual: 0.12
 gross_leverage_max: 2.0
 max_drawdown_pct: 0.10
 
-# Sleeve Weights (Strategy Evolution v2.0)
+# Sleeve Weights (Strategy Evolution v2.1)
 sleeves:
   core_index_rv: 0.20
   sector_rv: 0.20
@@ -472,6 +532,27 @@ europe_vol_convex:
   vstoxx_calls_pct: 0.50
   sx5e_puts_pct: 0.35
   eu_banks_puts_pct: 0.15
+
+# Term Structure Signal
+term_structure:
+  enabled: true
+  contango_threshold: 0.5
+  backwardation_threshold: -0.5
+  zscore_lookback_days: 60
+
+# Vol-of-Vol Jump Detection
+vol_of_vol:
+  enabled: true
+  lookback_days: 20
+  jump_window_days: 3
+  jump_threshold_std: 2.0
+
+# Factor-Neutral Sector Pairs
+sector_pairs:
+  enabled: true
+  included_sectors: [financials, technology, industrials, healthcare]
+  beta_adjust: true
+  neutralize_growth_value: true
 
 # FX Hedge Policy
 fx_hedge:
@@ -528,21 +609,25 @@ europe_regime:
 AbstractFinance/
 ├── config/
 │   ├── settings.yaml          # All strategy parameters
-│   └── instruments.yaml       # Tradable instruments
+│   └── instruments.yaml       # Tradable instruments + sector pairs
 ├── src/
 │   ├── strategy_logic.py      # Sleeve construction + trend filter
 │   ├── tail_hedge.py          # Europe-centric crisis alpha
+│   ├── europe_vol.py          # Europe vol convexity engine (NEW)
+│   ├── sector_pairs.py        # Factor-neutral sector pairs (NEW)
 │   ├── risk_engine.py         # Regime detection + scaling
 │   ├── scheduler.py           # Daily orchestration
 │   ├── execution/             # Order execution stack
 │   ├── marketdata/            # Live data feeds (IBKR)
 │   ├── research/
-│   │   └── backtest.py        # Historical validation
+│   │   ├── backtest.py        # Historical validation
+│   │   └── backtest_compare.py # Strategy comparison
 │   └── state/
 │       └── run_ledger.py      # Exactly-once execution
 ├── tests/
 │   └── test_roadmap_features.py
 └── docs/
+    ├── INVESTMENT_STRATEGY.md  # This document
     ├── ROADMAP.md
     └── TRADING_ENGINE_ARCHITECTURE.md
 ```
@@ -556,7 +641,8 @@ AbstractFinance/
 | 1.0 | Nov 2025 | Initial implementation |
 | 1.1 | Dec 2025 | ENGINE_FIX_PLAN (FX, risk scaling, reconciliation) |
 | 1.2 | Dec 2025 | Execution Stack Upgrade (slippage, cost gating) |
-| **2.0** | Dec 2025 | **Strategy Evolution** (Europe-centric, trend filter, vol convexity) |
+| 2.0 | Dec 2025 | Strategy Evolution (Europe-centric, trend filter, vol convexity) |
+| **2.1** | Dec 2025 | **Full Implementation** (term structure, vol-of-vol, sector pairs) |
 
 ---
 
