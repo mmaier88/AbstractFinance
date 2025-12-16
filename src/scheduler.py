@@ -416,14 +416,44 @@ class DailyScheduler:
                 str(self.state_dir / "portfolio_state.json")
             )
             if self.portfolio is None:
-                # Initialize new portfolio
-                initial_capital = self.settings.get('backtest', {}).get('initial_capital', 1000000)
+                # Initialize new portfolio FROM BROKER REALITY (not config)
+                # This prevents phantom positions from config mismatches
+                broker_nav = None
+                if self.ib_client and self.ib_client.is_connected():
+                    broker_nav = self.ib_client.get_account_nav()
+                    self.logger.logger.info(
+                        "portfolio_init_from_broker",
+                        broker_nav=broker_nav
+                    )
+
+                if broker_nav and broker_nav > 0:
+                    # Use broker NAV as source of truth
+                    initial_capital = broker_nav
+                else:
+                    # Fallback only if broker unavailable (should not happen in production)
+                    initial_capital = self.settings.get('backtest', {}).get('initial_capital', 1000000)
+                    self.logger.logger.warning(
+                        "portfolio_init_fallback_to_config",
+                        reason="broker_nav_unavailable",
+                        config_capital=initial_capital
+                    )
+
                 self.portfolio = PortfolioState(
                     nav=initial_capital,
                     cash=initial_capital,
                     initial_capital=initial_capital,
                     inception_date=date.today()
                 )
+
+                # Sync positions from broker on fresh init
+                if self.ib_client and self.ib_client.is_connected():
+                    ib_positions = self.ib_client.get_positions()
+                    for inst_id, position in ib_positions.items():
+                        self.portfolio.positions[inst_id] = position
+                    self.logger.logger.info(
+                        "portfolio_positions_synced_from_broker",
+                        position_count=len(ib_positions)
+                    )
 
             # Load returns history
             self.returns_history = load_returns_history(
