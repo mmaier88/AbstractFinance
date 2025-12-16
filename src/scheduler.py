@@ -440,7 +440,7 @@ class DailyScheduler:
 
                 self.portfolio = PortfolioState(
                     nav=initial_capital,
-                    cash=initial_capital,
+                    cash_by_ccy={"USD": initial_capital},
                     initial_capital=initial_capital,
                     inception_date=date.today()
                 )
