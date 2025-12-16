@@ -205,6 +205,128 @@ hedge_budget_usage_pct = Gauge(
 
 
 # =============================================================================
+# Execution Metrics (EXECUTION_STACK_UPGRADE)
+# =============================================================================
+
+execution_slippage_bps = Histogram(
+    'abstractfinance_execution_slippage_bps',
+    'Execution slippage in basis points',
+    ['instrument', 'side', 'asset_class'],
+    buckets=(-10, -5, -2, 0, 2, 5, 10, 15, 20, 30, 50)
+)
+
+execution_notional_total = Counter(
+    'abstractfinance_execution_notional_total',
+    'Total executed notional in USD',
+    ['asset_class']
+)
+
+execution_commission_total = Counter(
+    'abstractfinance_execution_commission_total',
+    'Total execution commissions in USD',
+)
+
+execution_replace_count = Histogram(
+    'abstractfinance_execution_replace_count',
+    'Number of order replacements before fill',
+    ['instrument'],
+    buckets=(0, 1, 2, 3, 4, 5, 6)
+)
+
+execution_netting_savings_qty = Counter(
+    'abstractfinance_execution_netting_savings_qty',
+    'Shares saved through trade netting',
+)
+
+execution_orders_by_policy = Counter(
+    'abstractfinance_execution_orders_by_policy',
+    'Orders executed by policy type',
+    ['policy']
+)
+
+
+# =============================================================================
+# ROADMAP Phase B: Europe-First Regime Metrics
+# =============================================================================
+
+risk_v2x_level = Gauge(
+    'abstractfinance_risk_v2x_level',
+    'Current V2X (VSTOXX) level'
+)
+
+risk_eurusd_trend = Gauge(
+    'abstractfinance_risk_eurusd_trend',
+    'EURUSD trend (annualized, negative = EUR weakening)'
+)
+
+risk_stress_score = Gauge(
+    'abstractfinance_risk_stress_score',
+    'Europe-first stress score (0-1)'
+)
+
+regime_inputs_missing = Gauge(
+    'abstractfinance_regime_inputs_missing',
+    'Regime inputs missing flag (1=missing V2X or EURUSD)'
+)
+
+
+# =============================================================================
+# ROADMAP Phase C: FX Hedge Metrics
+# =============================================================================
+
+fx_hedge_mode = Gauge(
+    'abstractfinance_fx_hedge_mode',
+    'Current FX hedge mode (0=FULL, 1=PARTIAL, 2=NONE)'
+)
+
+fx_residual_exposure_pct = Gauge(
+    'abstractfinance_fx_residual_exposure_pct',
+    'Residual FX exposure as percentage of NAV'
+)
+
+fx_hedge_ratio = Gauge(
+    'abstractfinance_fx_hedge_ratio',
+    'Current FX hedge ratio (0-1)'
+)
+
+
+# =============================================================================
+# ROADMAP Phase D: Tail Hedge Metrics
+# =============================================================================
+
+tailhedge_orders_rejected_total = Counter(
+    'abstractfinance_tailhedge_orders_rejected_total',
+    'Tail hedge orders rejected by validator',
+    ['reason']
+)
+
+tailhedge_budget_remaining_usd = Gauge(
+    'abstractfinance_tailhedge_budget_remaining_usd',
+    'Remaining tail hedge budget in USD'
+)
+
+tailhedge_effectiveness_pct = Gauge(
+    'abstractfinance_tailhedge_effectiveness_pct',
+    'Tail hedge effectiveness (% of drawdown offset)'
+)
+
+
+# =============================================================================
+# ROADMAP Phase A: Idempotency Metrics
+# =============================================================================
+
+idempotency_duplicate_prevented_total = Counter(
+    'abstractfinance_idempotency_duplicate_prevented_total',
+    'Duplicate order submissions prevented'
+)
+
+run_ledger_status = Gauge(
+    'abstractfinance_run_ledger_status',
+    'Current run status (0=PLANNED, 1=SUBMITTED, 2=FILLED, 3=DONE, 4=ABORTED)'
+)
+
+
+# =============================================================================
 # Scheduler Metrics
 # =============================================================================
 
@@ -404,3 +526,109 @@ def set_system_info(version: str, mode: str, environment: str):
         'mode': mode,
         'environment': environment
     })
+
+
+# =============================================================================
+# Execution Metrics Helper Functions (EXECUTION_STACK_UPGRADE)
+# =============================================================================
+
+def record_execution_fill(
+    instrument: str,
+    side: str,
+    quantity: int,
+    price: float,
+    slippage_bps: float,
+    asset_class: str = "ETF",
+    replace_count: int = 0,
+):
+    """Record an execution fill with slippage metrics."""
+    # Record slippage histogram
+    execution_slippage_bps.labels(
+        instrument=instrument,
+        side=side,
+        asset_class=asset_class
+    ).observe(slippage_bps)
+
+    # Record notional
+    notional = quantity * price
+    execution_notional_total.labels(asset_class=asset_class).inc(notional)
+
+    # Record replace count
+    execution_replace_count.labels(instrument=instrument).observe(replace_count)
+
+    # Also record to standard order filled metric
+    orders_filled_total.labels(instrument=instrument, side=side, sleeve='execution_stack').inc()
+    if replace_count > 0:
+        order_fill_latency_seconds.labels(instrument=instrument).observe(replace_count * 15)  # Approx latency
+
+
+def record_execution_commission(commission: float):
+    """Record execution commission."""
+    execution_commission_total.inc(commission)
+
+
+def record_netting_savings(shares_saved: int):
+    """Record shares saved through netting."""
+    execution_netting_savings_qty.inc(shares_saved)
+
+
+def record_execution_policy(policy: str):
+    """Record order by policy type."""
+    execution_orders_by_policy.labels(policy=policy).inc()
+
+
+def record_execution_rejected(instrument: str, reason: str):
+    """Record an execution rejection."""
+    orders_rejected_total.labels(instrument=instrument, reason=reason).inc()
+
+
+# =============================================================================
+# ROADMAP Helper Functions
+# =============================================================================
+
+def update_europe_regime_metrics(
+    v2x: float = None,
+    eurusd_trend: float = None,
+    stress_score: float = None,
+    inputs_missing: bool = False
+):
+    """Update Europe-first regime metrics (Phase B)."""
+    if v2x is not None:
+        risk_v2x_level.set(v2x)
+    if eurusd_trend is not None:
+        risk_eurusd_trend.set(eurusd_trend)
+    if stress_score is not None:
+        risk_stress_score.set(stress_score)
+    regime_inputs_missing.set(1 if inputs_missing else 0)
+
+
+def update_fx_hedge_metrics(
+    mode: int,  # 0=FULL, 1=PARTIAL, 2=NONE
+    residual_pct: float,
+    hedge_ratio: float
+):
+    """Update FX hedge metrics (Phase C)."""
+    fx_hedge_mode.set(mode)
+    fx_residual_exposure_pct.set(residual_pct * 100)
+    fx_hedge_ratio.set(hedge_ratio)
+
+
+def record_tailhedge_rejection(reason: str):
+    """Record a tail hedge order rejection (Phase D)."""
+    tailhedge_orders_rejected_total.labels(reason=reason).inc()
+
+
+def update_tailhedge_metrics(budget_remaining: float, effectiveness_pct: float):
+    """Update tail hedge metrics (Phase D)."""
+    tailhedge_budget_remaining_usd.set(budget_remaining)
+    tailhedge_effectiveness_pct.set(effectiveness_pct)
+
+
+def record_idempotency_duplicate_prevented():
+    """Record a duplicate order prevented (Phase A)."""
+    idempotency_duplicate_prevented_total.inc()
+
+
+def update_run_ledger_status(status: int):
+    """Update run ledger status (Phase A). 0=PLANNED, 1=SUBMITTED, 2=FILLED, 3=DONE, 4=ABORTED."""
+    run_ledger_status.set(status)

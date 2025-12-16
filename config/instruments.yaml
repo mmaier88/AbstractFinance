@@ -387,7 +387,16 @@ volatility:
     multiplier: 1000.0
     description: "CBOE Volatility Index Future"
 
-  # VSTOXX Future
+  # VIX Mini Future (more accessible sizing)
+  vix_mini_future:
+    symbol: "VXM"
+    exchange: "CFE"
+    sec_type: "FUT"
+    currency: "USD"
+    multiplier: 100.0
+    description: "Mini VIX Future"
+
+  # VSTOXX Future - PRIMARY for Europe insurance
   vstoxx_future:
     symbol: "FVS"
     exchange: "EUREX"
@@ -395,6 +404,52 @@ volatility:
     currency: "EUR"
     multiplier: 100.0
     description: "VSTOXX Mini Future"
+
+  # VSTOXX Options on Futures - for convexity structures
+  vstoxx_option:
+    underlying: "FVS"
+    exchange: "EUREX"
+    sec_type: "FOP"
+    currency: "EUR"
+    multiplier: 100.0
+    description: "VSTOXX Future Options"
+
+europe_vol_structures:
+  # EURO STOXX 50 Options - PRIMARY for Europe insurance puts
+  sx5e_option:
+    underlying: "SX5E"
+    exchange: "EUREX"
+    sec_type: "OPT"
+    currency: "EUR"
+    multiplier: 10.0
+    description: "Euro STOXX 50 Index Options"
+
+  # EURO STOXX 50 Mini Options (smaller notional)
+  sx5e_mini_option:
+    underlying: "OXXP"
+    exchange: "EUREX"
+    sec_type: "OPT"
+    currency: "EUR"
+    multiplier: 1.0
+    description: "Euro STOXX 50 Mini Options"
+
+  # DAX Options - German market stress
+  dax_option:
+    underlying: "DAX"
+    exchange: "EUREX"
+    sec_type: "OPT"
+    currency: "EUR"
+    multiplier: 5.0
+    description: "DAX Index Options"
+
+  # Euro STOXX Banks Options - EU financial stress
+  sx7e_option:
+    underlying: "SX7E"
+    exchange: "EUREX"
+    sec_type: "OPT"
+    currency: "EUR"
+    multiplier: 10.0
+    description: "Euro STOXX Banks Index Options"
 
 # Single Stock Universe for Systematic L/S
 single_stocks:

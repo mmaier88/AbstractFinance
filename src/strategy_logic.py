@@ -1,6 +1,10 @@
 """
 Multi-sleeve strategy construction for AbstractFinance.
 Implements the European Decline Macro strategy across all sleeves.
+
+ENGINE_FIX_PLAN Updates:
+- Phase 4: Currency-correct position sizing
+- Phase 5: Portfolio-level FX hedging (central FX book)
 """
 
 import pandas as pd
@@ -10,11 +14,281 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .portfolio import PortfolioState, Sleeve, Position
+from .portfolio import PortfolioState, Sleeve, Position, InstrumentType
 from .risk_engine import RiskEngine, RiskDecision, RiskRegime
 from .data_feeds import DataFeed
 from .stock_screener import run_screening, get_default_us_universe, get_default_eu_universe
 from .logging_utils import get_trading_logger
+from .fx_rates import (
+    FXRates, BASE_CCY, get_fx_rates,
+    compute_net_fx_exposure, compute_fx_hedge_quantities
+)
+
+
+# =============================================================================
+# STRATEGY EVOLUTION: Trend Filter for Core RV Gating
+# Prevents bleeding during EU outperformance periods
+# =============================================================================
+
+@dataclass
+class TrendFilterConfig:
+    """Configuration for US/EU relative trend filter."""
+    enabled: bool = True
+    short_lookback_days: int = 60       # 3-month momentum
+    long_lookback_days: int = 252       # 12-month momentum
+    positive_threshold: float = 0.02    # +2% = full size
+    negative_threshold: float = -0.05   # -5% = cut to 25%
+    options_only_threshold: float = -0.10  # -10% = switch to options only
+    full_size_multiplier: float = 1.0
+    reduced_size_multiplier: float = 0.25
+
+    @classmethod
+    def from_settings(cls, settings: Dict[str, Any]) -> "TrendFilterConfig":
+        """Create TrendFilterConfig from settings dict."""
+        tf_settings = settings.get('trend_filter', {})
+        return cls(
+            enabled=tf_settings.get('enabled', True),
+            short_lookback_days=tf_settings.get('short_lookback_days', 60),
+            long_lookback_days=tf_settings.get('long_lookback_days', 252),
+            positive_threshold=tf_settings.get('positive_momentum_threshold', 0.02),
+            negative_threshold=tf_settings.get('negative_momentum_threshold', -0.05),
+            options_only_threshold=tf_settings.get('options_only_threshold', -0.10),
+            full_size_multiplier=tf_settings.get('full_size_multiplier', 1.0),
+            reduced_size_multiplier=tf_settings.get('reduced_size_multiplier', 0.25),
+        )
+
+
+@dataclass
+class TrendFilterResult:
+    """Result of trend filter analysis."""
+    us_eu_momentum_short: float     # 3-month relative momentum
+    us_eu_momentum_long: float      # 12-month relative momentum
+    combined_momentum: float        # Weighted average
+    sizing_multiplier: float        # 0.0 to 1.0
+    use_options_only: bool          # Switch to options-only mode
+    commentary: str
+
+
+class TrendFilter:
+    """
+    US/EU Relative Trend Filter.
+
+    Prevents the strategy from bleeding during periods when Europe
+    outperforms the US (which does happen cyclically).
+
+    When US/EU momentum turns negative:
+    - Reduce core RV and single name sizing
+    - At extreme negative, switch to options-only protection
+    """
+
+    def __init__(self, config: TrendFilterConfig):
+        self.config = config
+
+    def compute_momentum(
+        self,
+        us_prices: pd.Series,
+        eu_prices: pd.Series,
+        lookback_days: int
+    ) -> float:
+        """
+        Compute US vs EU relative momentum.
+
+        Returns:
+            Positive = US outperforming (thesis working)
+            Negative = EU outperforming (thesis not working)
+        """
+        if len(us_prices) < lookback_days or len(eu_prices) < lookback_days:
+            return 0.0
+
+        # Compute returns over lookback
+        us_return = (us_prices.iloc[-1] / us_prices.iloc[-lookback_days]) - 1
+        eu_return = (eu_prices.iloc[-1] / eu_prices.iloc[-lookback_days]) - 1
+
+        # Relative momentum = US return - EU return
+        return us_return - eu_return
+
+    def analyze(
+        self,
+        data_feed: "DataFeed",
+        us_symbol: str = "CSPX",
+        eu_symbol: str = "CS51"
+    ) -> TrendFilterResult:
+        """
+        Analyze US/EU trend and determine position sizing.
+
+        Args:
+            data_feed: Data feed for price history
+            us_symbol: US index symbol
+            eu_symbol: EU index symbol
+
+        Returns:
+            TrendFilterResult with sizing recommendation
+        """
+        if not self.config.enabled:
+            return TrendFilterResult(
+                us_eu_momentum_short=0.0,
+                us_eu_momentum_long=0.0,
+                combined_momentum=0.0,
+                sizing_multiplier=1.0,
+                use_options_only=False,
+                commentary="Trend filter disabled"
+            )
+
+        try:
+            # Get price history
+            us_prices = data_feed.get_price_history(us_symbol, self.config.long_lookback_days + 10)
+            eu_prices = data_feed.get_price_history(eu_symbol, self.config.long_lookback_days + 10)
+
+            # Compute short and long momentum
+            momentum_short = self.compute_momentum(
+                us_prices, eu_prices, self.config.short_lookback_days
+            )
+            momentum_long = self.compute_momentum(
+                us_prices, eu_prices, self.config.long_lookback_days
+            )
+
+            # Combined momentum (weight short-term more heavily)
+            combined = 0.6 * momentum_short + 0.4 * momentum_long
+
+        except Exception as e:
+            # If data unavailable, assume neutral
+            return TrendFilterResult(
+                us_eu_momentum_short=0.0,
+                us_eu_momentum_long=0.0,
+                combined_momentum=0.0,
+                sizing_multiplier=1.0,
+                use_options_only=False,
+                commentary=f"Trend filter data unavailable: {e}"
+            )
+
+        # Determine sizing multiplier
+        if combined >= self.config.positive_threshold:
+            # Thesis working well - full size
+            multiplier = self.config.full_size_multiplier
+            options_only = False
+            commentary = f"Trend positive ({combined:+.1%}): full size"
+
+        elif combined <= self.config.options_only_threshold:
+            # Thesis very wrong - switch to options only
+            multiplier = 0.0
+            options_only = True
+            commentary = f"Trend very negative ({combined:+.1%}): options only"
+
+        elif combined <= self.config.negative_threshold:
+            # Thesis not working - reduce size
+            multiplier = self.config.reduced_size_multiplier
+            options_only = False
+            commentary = f"Trend negative ({combined:+.1%}): reduced to {multiplier:.0%}"
+
+        else:
+            # Neutral zone - interpolate
+            # Map from [negative_threshold, positive_threshold] to [reduced, full]
+            range_size = self.config.positive_threshold - self.config.negative_threshold
+            position_in_range = (combined - self.config.negative_threshold) / range_size
+            multiplier = (
+                self.config.reduced_size_multiplier +
+                position_in_range * (self.config.full_size_multiplier - self.config.reduced_size_multiplier)
+            )
+            options_only = False
+            commentary = f"Trend neutral ({combined:+.1%}): size {multiplier:.0%}"
+
+        return TrendFilterResult(
+            us_eu_momentum_short=momentum_short,
+            us_eu_momentum_long=momentum_long,
+            combined_momentum=combined,
+            sizing_multiplier=multiplier,
+            use_options_only=options_only,
+            commentary=commentary
+        )
+
+
+# =============================================================================
+# ROADMAP Phase C: FX Hedge Policy Modes
+# =============================================================================
+
+class FXHedgeMode(Enum):
+    """FX hedge policy modes."""
+    FULL = "FULL"        # Hedge to < 2% residual FX exposure
+    PARTIAL = "PARTIAL"  # Hedge to ~25% residual (let some USD exposure through)
+    NONE = "NONE"        # No FX hedging (full USD exposure payoff)
+
+
+@dataclass
+class FXHedgePolicy:
+    """
+    FX hedge policy configuration.
+
+    ROADMAP Phase C: Supports FULL/PARTIAL/NONE modes with regime overrides.
+    """
+    mode: FXHedgeMode = FXHedgeMode.PARTIAL
+
+    # Target residual FX exposure as % of NAV
+    target_residual_pct: Dict[FXHedgeMode, float] = field(default_factory=lambda: {
+        FXHedgeMode.FULL: 0.02,     # 2% max residual
+        FXHedgeMode.PARTIAL: 0.25,  # 25% max residual
+        FXHedgeMode.NONE: 1.00,     # No hedge
+    })
+
+    # Regime-based mode overrides
+    regime_overrides: Dict[str, FXHedgeMode] = field(default_factory=lambda: {
+        "NORMAL": FXHedgeMode.PARTIAL,
+        "ELEVATED": FXHedgeMode.PARTIAL,
+        "CRISIS": FXHedgeMode.NONE,  # Let USD exposure pay off in crisis
+    })
+
+    @classmethod
+    def from_settings(cls, settings: Dict[str, Any]) -> "FXHedgePolicy":
+        """Create FXHedgePolicy from settings dict."""
+        fx_settings = settings.get('fx_hedge', {})
+
+        mode_str = fx_settings.get('mode', 'PARTIAL')
+        mode = FXHedgeMode[mode_str] if isinstance(mode_str, str) else FXHedgeMode.PARTIAL
+
+        target_residual = fx_settings.get('target_residual_pct_nav', {})
+        target_residual_pct = {
+            FXHedgeMode.FULL: target_residual.get('FULL', 0.02),
+            FXHedgeMode.PARTIAL: target_residual.get('PARTIAL', 0.25),
+            FXHedgeMode.NONE: target_residual.get('NONE', 1.00),
+        }
+
+        regime_override_strs = fx_settings.get('regime_overrides', {})
+        regime_overrides = {}
+        for regime, mode_str in regime_override_strs.items():
+            try:
+                regime_overrides[regime.upper()] = FXHedgeMode[mode_str.upper()]
+            except (KeyError, AttributeError):
+                pass
+
+        # Fill defaults for missing regimes
+        for regime in ["NORMAL", "ELEVATED", "CRISIS", "RECOVERY"]:
+            if regime not in regime_overrides:
+                regime_overrides[regime] = FXHedgeMode.PARTIAL
+
+        return cls(
+            mode=mode,
+            target_residual_pct=target_residual_pct,
+            regime_overrides=regime_overrides,
+        )
+
+    def get_effective_mode(self, regime: str) -> FXHedgeMode:
+        """Get effective FX hedge mode considering regime override."""
+        return self.regime_overrides.get(regime.upper(), self.mode)
+
+    def get_hedge_ratio(self, regime: str) -> float:
+        """
+        Get FX hedge ratio for current regime.
+
+        Returns:
+            Hedge ratio (0.0 = no hedge, 1.0 = full hedge)
+        """
+        effective_mode = self.get_effective_mode(regime)
+        target_residual = self.target_residual_pct.get(effective_mode, 0.25)
+
+        # Convert residual target to hedge ratio
+        # If target_residual = 0.02 (2%), we hedge 98% -> ratio = 0.98
+        # If target_residual = 0.25 (25%), we hedge 75% -> ratio = 0.75
+        # If target_residual = 1.00 (100%), we hedge 0% -> ratio = 0.0
+        return max(0.0, 1.0 - target_residual)
 
 
 @dataclass
@@ -90,6 +364,16 @@ class Strategy:
             Sleeve.CASH_BUFFER: sleeve_settings.get('cash_buffer', 0.05)
         }
 
+        # ROADMAP Phase C: FX Hedge Policy
+        self.fx_hedge_policy = FXHedgePolicy.from_settings(settings)
+
+        # STRATEGY EVOLUTION: Trend Filter
+        trend_config = TrendFilterConfig.from_settings(settings)
+        self.trend_filter = TrendFilter(trend_config)
+
+        # Track last trend filter result for reporting
+        self.last_trend_result: Optional[TrendFilterResult] = None
+
         # Instrument mappings
         self._build_instrument_mappings()
 
@@ -130,19 +414,28 @@ class Strategy:
         self,
         portfolio: PortfolioState,
         data_feed: DataFeed,
-        risk_decision: RiskDecision
+        risk_decision: RiskDecision,
+        fx_rates: Optional[FXRates] = None,
+        fx_hedge_ratio: float = 1.0
     ) -> StrategyOutput:
         """
         Compute target positions for all sleeves.
+
+        ENGINE_FIX_PLAN Updates:
+        - Phase 4: Currency-correct position sizing
+        - Phase 5: Portfolio-level FX hedging (replaces per-sleeve hedges)
 
         Args:
             portfolio: Current portfolio state
             data_feed: Data feed for prices
             risk_decision: Risk engine decision
+            fx_rates: FX rates for currency conversion
+            fx_hedge_ratio: FX hedge ratio (0.0 to 1.0, default 1.0 = full hedge)
 
         Returns:
             StrategyOutput with all targets and orders
         """
+        fx_rates = fx_rates or get_fx_rates()
         sleeve_targets = {}
         all_positions = {}
         commentary_parts = []
@@ -157,23 +450,37 @@ class Strategy:
                 f"Regime reduction applied: {risk_decision.reduce_factor:.2f}"
             )
 
-        # 1. Core Index RV Sleeve
+        # STRATEGY EVOLUTION: Apply trend filter to equity L/S sleeves
+        trend_result = self.trend_filter.analyze(data_feed)
+        self.last_trend_result = trend_result
+        trend_multiplier = trend_result.sizing_multiplier
+
+        commentary_parts.append(f"Trend: {trend_result.commentary}")
+
+        if trend_result.use_options_only:
+            commentary_parts.append("WARNING: Options-only mode - equity L/S disabled")
+
+        # 1. Core Index RV Sleeve (trend-gated)
+        # Apply trend multiplier to equity L/S sleeves
+        core_scaling = scaling * trend_multiplier if not trend_result.use_options_only else 0.0
         core_targets = self._build_core_index_targets(
-            nav, scaling, data_feed, risk_decision
+            nav, core_scaling, data_feed, risk_decision, fx_rates
         )
         sleeve_targets[Sleeve.CORE_INDEX_RV] = core_targets
         all_positions.update(core_targets.target_positions)
 
-        # 2. Sector RV Sleeve
+        # 2. Sector RV Sleeve (trend-gated, factor-neutral)
+        sector_scaling = scaling * trend_multiplier if not trend_result.use_options_only else 0.0
         sector_targets = self._build_sector_rv_targets(
-            nav, scaling, data_feed, risk_decision
+            nav, sector_scaling, data_feed, risk_decision
         )
         sleeve_targets[Sleeve.SECTOR_RV] = sector_targets
         all_positions.update(sector_targets.target_positions)
 
-        # 3. Single Name Sleeve
+        # 3. Single Name Sleeve (trend-gated)
+        single_scaling = scaling * trend_multiplier if not trend_result.use_options_only else 0.0
         single_targets = self._build_single_name_targets(
-            nav, scaling, data_feed, risk_decision
+            nav, single_scaling, data_feed, risk_decision
         )
         sleeve_targets[Sleeve.SINGLE_NAME] = single_targets
         all_positions.update(single_targets.target_positions)
@@ -200,6 +507,75 @@ class Strategy:
             target_weight=self.sleeve_weights[Sleeve.CASH_BUFFER]
         )
 
+        # =====================================================
+        # Phase 5 + Phase C: Portfolio-Level FX Hedging with Policy Modes
+        # =====================================================
+        # Compute net FX exposure across ALL positions and cash
+        net_fx_exposure = compute_net_fx_exposure(
+            portfolio.positions,
+            portfolio.cash_by_ccy,
+            fx_rates
+        )
+
+        # Add exposure from target positions (estimate based on targets)
+        # This is an approximation - real exposure will be computed after fills
+        for inst_id, target_qty in all_positions.items():
+            try:
+                spec = self._find_instrument_spec_by_id(inst_id)
+                if spec and spec.get('currency', 'USD') != 'USD':
+                    ccy = spec['currency']
+                    price = data_feed.get_last_price(inst_id)
+                    multiplier = spec.get('multiplier', 1.0)
+                    exposure = target_qty * price * multiplier
+                    net_fx_exposure[ccy] = net_fx_exposure.get(ccy, 0.0) + exposure
+            except Exception:
+                pass
+
+        # ROADMAP Phase C: Get FX hedge ratio based on policy and regime
+        regime_str = risk_decision.regime.value if risk_decision.regime else "NORMAL"
+        effective_fx_mode = self.fx_hedge_policy.get_effective_mode(regime_str)
+        policy_hedge_ratio = self.fx_hedge_policy.get_hedge_ratio(regime_str)
+
+        # Use policy ratio unless explicitly overridden by fx_hedge_ratio param
+        effective_hedge_ratio = fx_hedge_ratio if fx_hedge_ratio < 1.0 else policy_hedge_ratio
+
+        commentary_parts.append(
+            f"FX Mode: {effective_fx_mode.value} (regime={regime_str}, ratio={effective_hedge_ratio:.0%})"
+        )
+
+        # Compute FX hedge quantities
+        fx_hedges = compute_fx_hedge_quantities(
+            net_fx_exposure,
+            fx_rates,
+            hedge_ratio=effective_hedge_ratio
+        )
+
+        # Add FX hedges to all_positions
+        fx_hedge_mapping = {
+            "EUR": "eurusd_micro",  # M6E
+            "GBP": "gbpusd_micro",  # M6B
+            "CHF": "chfusd_micro",  # M6S
+        }
+
+        for ccy, contracts in fx_hedges.items():
+            if abs(contracts) > 0 and ccy in fx_hedge_mapping:
+                inst_id = fx_hedge_mapping[ccy]
+                all_positions[inst_id] = contracts
+                commentary_parts.append(
+                    f"FX Hedge: {ccy} -> {contracts} contracts"
+                )
+
+        # Check residual FX exposure is within limits (< 2% of NAV)
+        residual_fx_usd = sum(
+            abs(fx_rates.to_base(exp, ccy))
+            for ccy, exp in net_fx_exposure.items()
+        )
+        residual_fx_pct = residual_fx_usd / nav if nav > 0 else 0
+        if residual_fx_pct > 0.02:
+            commentary_parts.append(
+                f"WARNING: Residual FX exposure {residual_fx_pct:.1%} > 2%"
+            )
+
         # Generate orders
         orders = self._generate_orders(portfolio.positions, all_positions, sleeve_targets)
 
@@ -217,61 +593,72 @@ class Strategy:
             commentary=commentary
         )
 
+    def _find_instrument_spec_by_id(self, instrument_id: str) -> Optional[Dict]:
+        """Find instrument spec by ID in config."""
+        for category, instruments in self.instruments.items():
+            if isinstance(instruments, dict):
+                if instrument_id in instruments:
+                    return instruments[instrument_id]
+        return None
+
     def _build_core_index_targets(
         self,
         nav: float,
         scaling: float,
         data_feed: DataFeed,
-        risk_decision: RiskDecision
+        risk_decision: RiskDecision,
+        fx_rates: Optional[FXRates] = None
     ) -> SleeveTargets:
         """
         Build Core Index RV sleeve targets.
-        Long US (CSPX) vs Short EU (CS51), FX-hedged.
-        Using UCITS ETFs for EU PRIIPs/KID compliance.
-        """
-        target_weight = self.sleeve_weights[Sleeve.CORE_INDEX_RV]
-        target_notional = nav * target_weight * scaling
+        Long US (CSPX) vs Short EU (CS51).
 
-        # Split between long and short legs
-        notional_per_leg = target_notional / 2
+        CRITICAL (ENGINE_FIX_PLAN Phase 4):
+        - NAV is in BASE_CCY (USD)
+        - Convert notional to instrument currency BEFORE dividing by price
+        - Use round() not floor() for large positions
+
+        NOTE: FX hedging is now done at portfolio level (Phase 5)
+        """
+        fx_rates = fx_rates or get_fx_rates()
+        target_weight = self.sleeve_weights[Sleeve.CORE_INDEX_RV]
+        target_notional_usd = nav * target_weight * scaling
+
+        # Split between long and short legs (in USD)
+        notional_per_leg_usd = target_notional_usd / 2
         targets = {}
 
         try:
-            # US Long Leg - use UCITS ETF (CSPX on LSE)
+            # US Long Leg - CSPX on LSE (trades in USD)
+            # NAV (USD) -> notional (USD) -> divide by price (USD) -> qty
             cspx_price = data_feed.get_last_price('CSPX')
-            cspx_qty = int(notional_per_leg / cspx_price)
+            cspx_qty = round(notional_per_leg_usd / cspx_price)
             if cspx_qty > 0:
                 targets['us_index_etf'] = cspx_qty
 
-            # EU Short Leg - use UCITS ETF (CS51 on XETRA)
+            # EU Short Leg - CS51 on XETRA (trades in EUR)
+            # NAV (USD) -> convert to EUR -> divide by price (EUR) -> qty
             cs51_price = data_feed.get_last_price('CS51')
-            cs51_qty = int(notional_per_leg / cs51_price)
+            notional_eur = fx_rates.convert(notional_per_leg_usd, "USD", "EUR")
+            cs51_qty = round(notional_eur / cs51_price)
             if cs51_qty > 0:
                 targets['eu_index_etf'] = -cs51_qty  # Negative for short
 
-            # FX Hedge - hedge EUR exposure from short EU leg
-            # Short EUR to hedge the EUR notional of the short EU leg
-            eur_notional = abs(cs51_qty * cs51_price) if cs51_qty else 0
-
-            # Use micro futures for better sizing
-            # M6E = 12,500 EUR per contract
-            m6e_multiplier = 12500
-            fx_contracts = int(eur_notional / m6e_multiplier)
-            if fx_contracts > 0:
-                targets['eurusd_micro'] = -fx_contracts  # Short EUR
+            # NOTE: FX hedge is no longer per-sleeve (Phase 5)
+            # Portfolio-level FX hedging is done in compute_all_sleeve_targets
 
         except Exception as e:
             # Fallback to smaller position
-            targets['us_index_etf'] = int(notional_per_leg / 500)  # Assume ~$500 CSPX
-            targets['eu_index_etf'] = -int(notional_per_leg / 50)  # Assume ~$50 CS51
+            targets['us_index_etf'] = round(notional_per_leg_usd / 500)
+            targets['eu_index_etf'] = -round(notional_per_leg_usd / 50)
 
         return SleeveTargets(
             sleeve=Sleeve.CORE_INDEX_RV,
             target_positions=targets,
-            target_notional=target_notional,
+            target_notional=target_notional_usd,
             target_weight=target_weight,
-            long_notional=notional_per_leg,
-            short_notional=notional_per_leg
+            long_notional=notional_per_leg_usd,
+            short_notional=notional_per_leg_usd
         )
 
     def _build_sector_rv_targets(

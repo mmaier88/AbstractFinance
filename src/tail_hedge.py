@@ -13,15 +13,25 @@ from enum import Enum
 from .portfolio import PortfolioState, Sleeve
 from .strategy_logic import OrderSpec
 from .data_feeds import DataFeed
+from .options.validator import (
+    OptionValidator, OptionValidationConfig, OptionQuote, OptionValidationResult
+)
 
 
 class HedgeType(Enum):
-    """Types of tail hedges."""
-    EQUITY_PUT = "equity_put"          # SPX/SPY/SX5E puts
-    VOL_CALL = "vol_call"              # VIX calls
+    """Types of tail hedges - EUROPE-CENTRIC (Strategy Evolution)."""
+    # PRIMARY: Europe-specific hedges
+    EU_VOL_CALL = "eu_vol_call"        # VSTOXX calls (PRIMARY vol hedge)
+    EU_EQUITY_PUT = "eu_equity_put"    # SX5E puts (PRIMARY equity hedge)
+    EU_BANK_PUT = "eu_bank_put"        # SX7E/EU bank puts
+
+    # SECONDARY: US hedges
+    US_VOL_CALL = "us_vol_call"        # VIX calls (secondary)
+    US_EQUITY_PUT = "us_equity_put"    # SPY puts (secondary)
+
+    # TERTIARY: Other hedges
     CREDIT_PUT = "credit_put"          # HYG/JNK puts
-    SOVEREIGN_SPREAD = "sovereign"      # OAT-Bund spread
-    BANK_PUT = "bank_put"              # French bank puts
+    SOVEREIGN_SPREAD = "sovereign"     # OAT-Bund spread
     FX_HEDGE = "fx_hedge"              # EUR/USD hedges
 
 
@@ -95,22 +105,42 @@ class TailHedgeManager:
     """
 
     # Target hedge allocations as % of hedge budget
+    # STRATEGY EVOLUTION: Europe-centric allocation
+    # Primary (60%): EU vol + EU equity
+    # Secondary (25%): US vol + US equity
+    # Tertiary (15%): Credit + Sovereign
     HEDGE_ALLOCATION = {
-        HedgeType.EQUITY_PUT: 0.40,      # 40% to equity puts
-        HedgeType.VOL_CALL: 0.20,         # 20% to VIX calls
-        HedgeType.CREDIT_PUT: 0.15,       # 15% to credit puts
-        HedgeType.SOVEREIGN_SPREAD: 0.15, # 15% to sovereign
-        HedgeType.BANK_PUT: 0.10          # 10% to bank puts
+        # PRIMARY: Europe-specific (60% total)
+        HedgeType.EU_VOL_CALL: 0.30,       # 30% to VSTOXX calls (PRIMARY)
+        HedgeType.EU_EQUITY_PUT: 0.20,     # 20% to SX5E puts (PRIMARY)
+        HedgeType.EU_BANK_PUT: 0.10,       # 10% to EU bank puts
+
+        # SECONDARY: US hedges (25% total)
+        HedgeType.US_VOL_CALL: 0.15,       # 15% to VIX calls
+        HedgeType.US_EQUITY_PUT: 0.10,     # 10% to SPY puts
+
+        # TERTIARY: Other (15% total)
+        HedgeType.SOVEREIGN_SPREAD: 0.10,  # 10% to OAT-Bund
+        HedgeType.CREDIT_PUT: 0.05,        # 5% to credit puts
     }
 
     # Minimum days to expiry before rolling
     MIN_DTE_ROLL = 21
 
-    # OTM targets for puts
+    # OTM targets for puts/calls
     OTM_TARGETS = {
-        HedgeType.EQUITY_PUT: 0.15,   # 15% OTM
-        HedgeType.CREDIT_PUT: 0.10,   # 10% OTM
-        HedgeType.BANK_PUT: 0.20      # 20% OTM
+        # Europe puts
+        HedgeType.EU_EQUITY_PUT: 0.10,    # 10% OTM (SX5E)
+        HedgeType.EU_BANK_PUT: 0.15,      # 15% OTM (EU banks)
+        # US puts
+        HedgeType.US_EQUITY_PUT: 0.15,    # 15% OTM (SPY)
+        HedgeType.CREDIT_PUT: 0.10,       # 10% OTM (HYG)
+    }
+
+    # Strike offsets for vol calls (points OTM)
+    VOL_CALL_STRIKES = {
+        HedgeType.EU_VOL_CALL: 5.0,       # VSTOXX: current + 5 points
+        HedgeType.US_VOL_CALL: 10.0,      # VIX: current + 10 points
     }
 
     def __init__(
@@ -140,6 +170,28 @@ class TailHedgeManager:
         # Active hedges
         self.active_hedges: Dict[str, HedgePosition] = {}
         self.budget: Optional[HedgeBudget] = None
+
+        # ROADMAP Phase D: Option validator
+        validator_settings = settings.get('option_validator', {})
+        validator_config = OptionValidationConfig(
+            max_spread_pct_equity_puts=validator_settings.get('max_spread_pct_equity_puts', 0.08),
+            max_spread_pct_vix_calls=validator_settings.get('max_spread_pct_vix_calls', 0.12),
+            max_spread_pct_credit_puts=validator_settings.get('max_spread_pct_credit_puts', 0.10),
+            min_volume_equity_puts=validator_settings.get('min_volume_equity_puts', 100),
+            min_volume_vix_calls=validator_settings.get('min_volume_vix_calls', 50),
+            min_open_interest_equity_puts=validator_settings.get('min_open_interest_equity_puts', 500),
+            max_premium_per_leg_usd=validator_settings.get('max_premium_per_leg_usd', 50000),
+            max_premium_pct_budget=validator_settings.get('max_premium_pct_budget', 0.25),
+            min_dte=validator_settings.get('min_dte', 14),
+        )
+        self.option_validator = OptionValidator(validator_config)
+
+        # Track validation stats
+        self._validation_stats = {
+            'total_validated': 0,
+            'total_rejected': 0,
+            'rejection_reasons': {}
+        }
 
     def initialize_budget(self, nav: float, year_start_nav: Optional[float] = None) -> None:
         """Initialize or reset the hedge budget."""
@@ -334,17 +386,32 @@ class TailHedgeManager:
         data_feed: DataFeed,
         today: date
     ) -> List[OrderSpec]:
-        """Create orders for a specific hedge type."""
+        """Create orders for a specific hedge type - EUROPE-CENTRIC."""
         orders = []
 
-        if hedge_type == HedgeType.EQUITY_PUT:
-            # SPY puts - 3-6 month, 15% OTM
-            orders.extend(self._create_equity_puts(budget, data_feed, today))
+        # PRIMARY: Europe-specific hedges
+        if hedge_type == HedgeType.EU_VOL_CALL:
+            # VSTOXX calls - PRIMARY vol hedge for Europe insurance
+            orders.extend(self._create_vstoxx_calls(budget, data_feed, today))
 
-        elif hedge_type == HedgeType.VOL_CALL:
-            # VIX calls - 1-3 month OTM
+        elif hedge_type == HedgeType.EU_EQUITY_PUT:
+            # SX5E puts - PRIMARY equity hedge for Europe
+            orders.extend(self._create_sx5e_puts(budget, data_feed, today))
+
+        elif hedge_type == HedgeType.EU_BANK_PUT:
+            # EU bank puts (SX7E or bank ETF)
+            orders.extend(self._create_eu_bank_puts(budget, data_feed, today))
+
+        # SECONDARY: US hedges
+        elif hedge_type == HedgeType.US_VOL_CALL:
+            # VIX calls - secondary vol hedge
             orders.extend(self._create_vix_calls(budget, data_feed, today))
 
+        elif hedge_type == HedgeType.US_EQUITY_PUT:
+            # SPY puts - secondary equity hedge
+            orders.extend(self._create_spy_puts(budget, data_feed, today))
+
+        # TERTIARY: Other hedges
         elif hedge_type == HedgeType.CREDIT_PUT:
             # HYG/JNK puts
             orders.extend(self._create_credit_puts(budget, data_feed, today))
@@ -353,9 +420,180 @@ class TailHedgeManager:
             # OAT-Bund spread (short FOAT, long FGBL)
             orders.extend(self._create_sovereign_spread(budget, data_feed))
 
-        elif hedge_type == HedgeType.BANK_PUT:
-            # French bank puts or short exposure
-            orders.extend(self._create_bank_hedges(budget, data_feed, today))
+        return orders
+
+    # =========================================================================
+    # PRIMARY: Europe-Specific Hedge Methods (Strategy Evolution)
+    # =========================================================================
+
+    def _create_vstoxx_calls(
+        self,
+        budget: float,
+        data_feed: DataFeed,
+        today: date
+    ) -> List[OrderSpec]:
+        """
+        Create VSTOXX call orders - PRIMARY vol hedge for Europe insurance.
+
+        VSTOXX (V2X) is the Euro STOXX 50 implied volatility index.
+        Buying calls here provides convexity when Europe stress rises.
+        """
+        orders = []
+
+        try:
+            # Get current VSTOXX level
+            v2x_level = data_feed.get_v2x_level() if hasattr(data_feed, 'get_v2x_level') else 20.0
+
+            # Target strike: current + offset (buy OTM for convexity)
+            strike_offset = self.VOL_CALL_STRIKES.get(HedgeType.EU_VOL_CALL, 5.0)
+            v2x_strike = round(v2x_level + strike_offset)
+
+            # VSTOXX call premium estimation (~2-3 EUR per point for 2-month OTM)
+            est_premium_per_contract = 250.0  # EUR (multiplier = 100)
+
+            vstoxx_contracts = int(budget / est_premium_per_contract) if est_premium_per_contract > 0 else 0
+
+            if vstoxx_contracts > 0:
+                orders.append(OrderSpec(
+                    instrument_id="vstoxx_call",
+                    side="BUY",
+                    quantity=vstoxx_contracts,
+                    order_type="LMT",  # Use limit for options
+                    sleeve=Sleeve.CRISIS_ALPHA,
+                    reason=f"VSTOXX {v2x_strike} Call - 2M expiry (EU vol hedge)"
+                ))
+
+        except Exception:
+            pass
+
+        return orders
+
+    def _create_sx5e_puts(
+        self,
+        budget: float,
+        data_feed: DataFeed,
+        today: date
+    ) -> List[OrderSpec]:
+        """
+        Create SX5E (Euro STOXX 50) put orders - PRIMARY equity hedge.
+
+        These are the core "insurance for Europeans" hedge - pay off when
+        European equities decline.
+        """
+        orders = []
+
+        try:
+            # Get current SX5E level
+            sx5e_level = data_feed.get_last_price('FESX')  # Use futures as proxy
+
+            # Target strike: 10% OTM
+            otm_pct = self.OTM_TARGETS.get(HedgeType.EU_EQUITY_PUT, 0.10)
+            sx5e_strike = round(sx5e_level * (1 - otm_pct))
+
+            # SX5E option premium estimation (~1-2% for 10% OTM 3-month)
+            # Multiplier = 10, so notional = strike * 10
+            est_premium_pct = 0.015
+            premium_per_contract = sx5e_level * est_premium_pct * 10
+
+            sx5e_contracts = int(budget / premium_per_contract) if premium_per_contract > 0 else 0
+
+            if sx5e_contracts > 0:
+                orders.append(OrderSpec(
+                    instrument_id="sx5e_put",
+                    side="BUY",
+                    quantity=sx5e_contracts,
+                    order_type="LMT",
+                    sleeve=Sleeve.CRISIS_ALPHA,
+                    reason=f"SX5E {sx5e_strike} Put - 3M expiry (EU equity hedge)"
+                ))
+
+        except Exception:
+            pass
+
+        return orders
+
+    def _create_eu_bank_puts(
+        self,
+        budget: float,
+        data_feed: DataFeed,
+        today: date
+    ) -> List[OrderSpec]:
+        """
+        Create EU bank sector puts - hedges European financial stress.
+
+        Uses SX7E (Euro STOXX Banks) options or EXV1 ETF puts.
+        European banks are often the epicenter of EU-specific stress.
+        """
+        orders = []
+
+        try:
+            # Try to get EU bank index level (SX7E or ETF proxy)
+            try:
+                bank_level = data_feed.get_last_price('EXV1')  # EU banks ETF
+            except Exception:
+                bank_level = 10.0  # Fallback
+
+            # Target strike: 15% OTM (banks are more volatile)
+            otm_pct = self.OTM_TARGETS.get(HedgeType.EU_BANK_PUT, 0.15)
+            bank_strike = round(bank_level * (1 - otm_pct), 1)
+
+            # Premium estimation (~2-3% for 15% OTM)
+            est_premium_pct = 0.025
+            premium_per_contract = bank_level * est_premium_pct * 100
+
+            bank_contracts = int(budget / premium_per_contract) if premium_per_contract > 0 else 0
+
+            if bank_contracts > 0:
+                orders.append(OrderSpec(
+                    instrument_id="eu_bank_put",
+                    side="BUY",
+                    quantity=bank_contracts,
+                    order_type="LMT",
+                    sleeve=Sleeve.CRISIS_ALPHA,
+                    reason=f"EU Banks {bank_strike} Put - 2M expiry (financial stress hedge)"
+                ))
+
+        except Exception:
+            pass
+
+        return orders
+
+    # =========================================================================
+    # SECONDARY: US Hedge Methods
+    # =========================================================================
+
+    def _create_spy_puts(
+        self,
+        budget: float,
+        data_feed: DataFeed,
+        today: date
+    ) -> List[OrderSpec]:
+        """Create SPY put orders - secondary equity hedge."""
+        orders = []
+
+        try:
+            spy_price = data_feed.get_last_price('SPY')
+            otm_pct = self.OTM_TARGETS.get(HedgeType.US_EQUITY_PUT, 0.15)
+            spy_strike = round(spy_price * (1 - otm_pct))
+
+            # Estimate premium ~2-3% of notional for 15% OTM 3-month put
+            est_premium_pct = 0.025
+            spy_premium = spy_price * est_premium_pct * 100  # Per contract
+
+            spy_contracts = int(budget / spy_premium) if spy_premium > 0 else 0
+
+            if spy_contracts > 0:
+                orders.append(OrderSpec(
+                    instrument_id="spy_put",
+                    side="BUY",
+                    quantity=spy_contracts,
+                    order_type="LMT",
+                    sleeve=Sleeve.CRISIS_ALPHA,
+                    reason=f"SPY {spy_strike} Put - 3M expiry (US equity hedge)"
+                ))
+
+        except Exception:
+            pass
 
         return orders
 
@@ -365,53 +603,11 @@ class TailHedgeManager:
         data_feed: DataFeed,
         today: date
     ) -> List[OrderSpec]:
-        """Create equity put orders (SPY and FEZ)."""
-        orders = []
-
-        try:
-            # SPY put - 60% of equity put budget
-            spy_price = data_feed.get_last_price('SPY')
-            spy_strike = spy_price * (1 - self.OTM_TARGETS[HedgeType.EQUITY_PUT])
-            spy_strike = round(spy_strike)  # Round to whole dollar
-
-            # Estimate premium ~2-4% of notional for 15% OTM 3-month put
-            est_premium_pct = 0.025
-            spy_premium = spy_price * est_premium_pct * 100  # Per contract
-
-            spy_contracts = int((budget * 0.6) / spy_premium) if spy_premium > 0 else 0
-
-            if spy_contracts > 0:
-                orders.append(OrderSpec(
-                    instrument_id="spy_put",
-                    side="BUY",
-                    quantity=spy_contracts,
-                    order_type="MKT",
-                    sleeve=Sleeve.CRISIS_ALPHA,
-                    reason=f"SPY {spy_strike} Put - 3M expiry"
-                ))
-
-            # FEZ put - 40% of equity put budget
-            fez_price = data_feed.get_last_price('FEZ')
-            fez_strike = fez_price * (1 - self.OTM_TARGETS[HedgeType.EQUITY_PUT])
-            fez_strike = round(fez_strike, 1)
-
-            fez_premium = fez_price * est_premium_pct * 100
-            fez_contracts = int((budget * 0.4) / fez_premium) if fez_premium > 0 else 0
-
-            if fez_contracts > 0:
-                orders.append(OrderSpec(
-                    instrument_id="fez_put",
-                    side="BUY",
-                    quantity=fez_contracts,
-                    order_type="MKT",
-                    sleeve=Sleeve.CRISIS_ALPHA,
-                    reason=f"FEZ {fez_strike} Put - 3M expiry"
-                ))
-
-        except Exception:
-            pass
-
-        return orders
+        """Create equity put orders - DEPRECATED, use specific methods."""
+        # Split budget between EU (primary) and US (secondary)
+        eu_orders = self._create_sx5e_puts(budget * 0.6, data_feed, today)
+        us_orders = self._create_spy_puts(budget * 0.4, data_feed, today)
+        return eu_orders + us_orders
 
     def _create_vix_calls(
         self,
@@ -618,7 +814,7 @@ class TailHedgeManager:
         portfolio_state: PortfolioState,
         data_feed: DataFeed
     ) -> List[OrderSpec]:
-        """Add additional hedges during crisis."""
+        """Add additional hedges during crisis - EUROPE-CENTRIC."""
         orders = []
 
         if self.budget is None:
@@ -627,14 +823,94 @@ class TailHedgeManager:
         # Use up to 50% of remaining budget for crisis hedges
         crisis_budget = self.budget.remaining * 0.5
 
-        # Focus on VIX calls and equity puts during crisis
-        vix_orders = self._create_vix_calls(crisis_budget * 0.6, data_feed, date.today())
-        put_orders = self._create_equity_puts(crisis_budget * 0.4, data_feed, date.today())
+        # STRATEGY EVOLUTION: Focus on VSTOXX and SX5E during crisis
+        # Europe vol is the primary insurance channel
+        vstoxx_orders = self._create_vstoxx_calls(crisis_budget * 0.40, data_feed, date.today())
+        sx5e_orders = self._create_sx5e_puts(crisis_budget * 0.30, data_feed, date.today())
+        # VIX as secondary
+        vix_orders = self._create_vix_calls(crisis_budget * 0.20, data_feed, date.today())
+        # EU banks for financial stress
+        bank_orders = self._create_eu_bank_puts(crisis_budget * 0.10, data_feed, date.today())
 
+        orders.extend(vstoxx_orders)
+        orders.extend(sx5e_orders)
         orders.extend(vix_orders)
-        orders.extend(put_orders)
+        orders.extend(bank_orders)
 
         return orders
+
+    def validate_option_order(
+        self,
+        quote: OptionQuote,
+        hedge_type: HedgeType,
+        quantity: int = 1
+    ) -> OptionValidationResult:
+        """
+        Validate an option order before submission.
+
+        ROADMAP Phase D: Uses OptionValidator to check liquidity,
+        spreads, and budget constraints.
+
+        Args:
+            quote: Option quote data
+            hedge_type: Type of hedge
+            quantity: Number of contracts
+
+        Returns:
+            OptionValidationResult with pass/fail and details
+        """
+        # Map hedge type to validator hedge type string
+        hedge_type_map = {
+            # Europe-centric (primary)
+            HedgeType.EU_VOL_CALL: "vix_call",       # Use same thresholds as VIX
+            HedgeType.EU_EQUITY_PUT: "equity_put",
+            HedgeType.EU_BANK_PUT: "equity_put",
+            # US (secondary)
+            HedgeType.US_VOL_CALL: "vix_call",
+            HedgeType.US_EQUITY_PUT: "equity_put",
+            # Other
+            HedgeType.CREDIT_PUT: "credit_put",
+            HedgeType.SOVEREIGN_SPREAD: "equity_put",  # Not an option, but same thresholds
+        }
+        validator_type = hedge_type_map.get(hedge_type, "equity_put")
+
+        # Get remaining budget
+        budget_remaining = self.budget.remaining if self.budget else 0
+
+        # Validate
+        result = self.option_validator.validate(
+            quote=quote,
+            hedge_type=validator_type,
+            budget_remaining=budget_remaining,
+            quantity=quantity
+        )
+
+        # Track stats
+        self._validation_stats['total_validated'] += 1
+        if not result.is_valid:
+            self._validation_stats['total_rejected'] += 1
+            for failure in result.failures:
+                reason = failure.value
+                self._validation_stats['rejection_reasons'][reason] = \
+                    self._validation_stats['rejection_reasons'].get(reason, 0) + 1
+
+        return result
+
+    def get_validation_stats(self) -> Dict[str, Any]:
+        """Get option validation statistics."""
+        return {
+            **self._validation_stats,
+            'validator_metrics': self.option_validator.get_metrics()
+        }
+
+    def reset_validation_stats(self) -> None:
+        """Reset validation statistics (e.g., daily)."""
+        self._validation_stats = {
+            'total_validated': 0,
+            'total_rejected': 0,
+            'rejection_reasons': {}
+        }
+        self.option_validator.reset_metrics()
 
     def get_hedge_summary(self) -> Dict[str, Any]:
         """Get summary of current hedge positions."""
@@ -644,7 +920,8 @@ class TailHedgeManager:
             "total_current_value": sum(h.current_value for h in self.active_hedges.values() if h.is_active),
             "total_pnl": sum(h.pnl for h in self.active_hedges.values() if h.is_active),
             "by_type": {},
-            "budget": None
+            "budget": None,
+            "validation_stats": self._validation_stats  # Phase D
         }
 
         # Group by type

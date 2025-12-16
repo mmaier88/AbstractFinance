@@ -1,6 +1,12 @@
 """
 Multi-sleeve portfolio state management for AbstractFinance.
 Tracks positions, NAV, P&L, exposures, and sleeve allocations.
+
+Key Accounting Rules (from ENGINE_FIX_PLAN):
+1. Broker NetLiquidation (NLV) is the source of truth
+2. Exposure != NAV (Exposure is for risk, NAV is for capital)
+3. Every number has a currency - no implicit USD
+4. If reconciliation fails -> STOP TRADING
 """
 
 import pandas as pd
@@ -13,6 +19,7 @@ import json
 from pathlib import Path
 
 from .data_feeds import DataFeed
+from .fx_rates import FXRates, BASE_CCY, cash_in_base_ccy, get_fx_rates
 
 
 class Sleeve(Enum):
@@ -25,20 +32,42 @@ class Sleeve(Enum):
     CASH_BUFFER = "cash_buffer"
 
 
+class InstrumentType(Enum):
+    """Instrument type classification."""
+    STK = "STK"  # Stock
+    ETF = "ETF"  # ETF (treated same as stock for NAV)
+    FUT = "FUT"  # Futures
+    OPT = "OPT"  # Options
+    CASH = "CASH"  # Forex cash
+
+
 @dataclass
 class Position:
-    """Represents a single position in the portfolio."""
+    """
+    Represents a single position in the portfolio.
+
+    IMPORTANT: Currency is REQUIRED - no implicit USD.
+    """
     instrument_id: str
     quantity: float
     avg_cost: float
+    currency: str  # REQUIRED - no default
     market_price: float = 0.0
     multiplier: float = 1.0
-    currency: str = "USD"
+    instrument_type: InstrumentType = InstrumentType.STK
     sleeve: Sleeve = Sleeve.CORE_INDEX_RV
+
+    def __post_init__(self):
+        """Validate required fields."""
+        if not self.currency:
+            raise ValueError(f"Currency is required for position {self.instrument_id}")
 
     @property
     def market_value(self) -> float:
-        """Calculate market value of position."""
+        """
+        Calculate market value of position (for EXPOSURE calculation).
+        This is the notional value of the position.
+        """
         return self.quantity * self.market_price * self.multiplier
 
     @property
@@ -48,7 +77,7 @@ class Position:
 
     @property
     def unrealized_pnl(self) -> float:
-        """Calculate unrealized P&L."""
+        """Calculate unrealized P&L in position currency."""
         return self.market_value - self.cost_basis
 
     @property
@@ -57,6 +86,69 @@ class Position:
         if self.cost_basis == 0:
             return 0.0
         return self.unrealized_pnl / abs(self.cost_basis)
+
+
+def position_nav_value(position: Position, fx_rates: FXRates) -> float:
+    """
+    Calculate position's contribution to NAV (in BASE_CCY).
+
+    CRITICAL RULE: Futures contribute ONLY their unrealized P&L to NAV,
+    NOT their notional value. Cash already includes variation margin.
+
+    Args:
+        position: Position object
+        fx_rates: FX rates for currency conversion
+
+    Returns:
+        NAV contribution in BASE_CCY (USD)
+    """
+    if position.instrument_type == InstrumentType.FUT:
+        # Futures: NAV value = unrealized P&L ONLY
+        # (price - avg_cost) * quantity * multiplier
+        pnl = position.unrealized_pnl
+        return fx_rates.to_base(pnl, position.currency)
+
+    elif position.instrument_type == InstrumentType.OPT:
+        # Options: NAV value = model value (market_value for now)
+        # TODO: Implement proper options valuation
+        value = position.market_value
+        return fx_rates.to_base(value, position.currency)
+
+    else:
+        # Stocks/ETFs: NAV value = qty * price
+        value = position.market_value
+        return fx_rates.to_base(value, position.currency)
+
+
+def position_exposure(position: Position, fx_rates: FXRates) -> float:
+    """
+    Calculate position's risk exposure (in BASE_CCY).
+
+    Exposure is always the full notional value, used for risk calculations.
+
+    Args:
+        position: Position object
+        fx_rates: FX rates for currency conversion
+
+    Returns:
+        Risk exposure in BASE_CCY (USD)
+    """
+    if position.instrument_type == InstrumentType.FUT:
+        # Futures: Exposure = qty * price * multiplier (full notional)
+        exposure = position.quantity * position.market_price * position.multiplier
+        return fx_rates.to_base(exposure, position.currency)
+
+    elif position.instrument_type == InstrumentType.OPT:
+        # Options: Exposure = delta * underlying_price * multiplier
+        # For now, use notional as approximation (delta ~ 0.5 for ATM)
+        # TODO: Get actual delta from options chain
+        exposure = position.market_value * 0.5  # Approximate delta
+        return fx_rates.to_base(exposure, position.currency)
+
+    else:
+        # Stocks/ETFs: Exposure = qty * price
+        exposure = position.market_value
+        return fx_rates.to_base(exposure, position.currency)
 
 
 @dataclass
@@ -78,11 +170,23 @@ class PortfolioState:
     """
     Complete portfolio state including all sleeves.
     This is the primary data structure for portfolio management.
+
+    Key Changes (ENGINE_FIX_PLAN):
+    - cash_by_ccy: Multi-currency cash balances (not single cash float)
+    - broker_nlv: Last known broker NetLiquidation for reconciliation
+    - reconciliation_status: Pass/Fail status from last reconciliation
     """
     # Core metrics
     nav: float = 0.0
-    cash: float = 0.0
     initial_capital: float = 0.0
+
+    # Multi-currency cash balances (Phase 1)
+    cash_by_ccy: Dict[str, float] = field(default_factory=lambda: {"USD": 0.0})
+
+    # Broker reconciliation (Phase 3)
+    broker_nlv: float = 0.0
+    reconciliation_status: str = "NOT_CHECKED"  # "PASS", "FAIL", "HALT", "NOT_CHECKED"
+    reconciliation_diff_pct: float = 0.0
 
     # Position tracking
     positions: Dict[str, Position] = field(default_factory=dict)
@@ -90,7 +194,7 @@ class PortfolioState:
     # Sleeve allocations
     sleeve_allocations: Dict[Sleeve, SleeveAllocation] = field(default_factory=dict)
 
-    # Exposure metrics
+    # Exposure metrics (in BASE_CCY)
     gross_exposure: float = 0.0
     net_exposure: float = 0.0
     long_exposure: float = 0.0
@@ -119,6 +223,18 @@ class PortfolioState:
     # Timestamps
     last_update: Optional[datetime] = None
     inception_date: Optional[date] = None
+
+    # Backward compatibility property
+    @property
+    def cash(self) -> float:
+        """Total cash in BASE_CCY (backward compatibility)."""
+        fx_rates = get_fx_rates()
+        return cash_in_base_ccy(self.cash_by_ccy, fx_rates)
+
+    @cash.setter
+    def cash(self, value: float) -> None:
+        """Set USD cash (backward compatibility)."""
+        self.cash_by_ccy["USD"] = value
 
     def __post_init__(self):
         """Initialize sleeve allocations if empty."""
@@ -205,58 +321,84 @@ class PortfolioState:
 
         return Sleeve.CORE_INDEX_RV
 
-    def compute_nav(self, data_feed: DataFeed) -> float:
+    def compute_nav(
+        self,
+        data_feed: DataFeed,
+        fx_rates: Optional[FXRates] = None
+    ) -> float:
         """
         Compute current NAV from positions and cash.
 
+        CRITICAL (ENGINE_FIX_PLAN Phase 2):
+        - NAV = cash_in_base_ccy + sum(position_nav_value)
+        - Futures contribute ONLY unrealized P&L, not notional
+        - All values converted to BASE_CCY before summation
+
         Args:
             data_feed: Data feed for current prices
+            fx_rates: FX rates for currency conversion (optional)
 
         Returns:
-            Current NAV
+            Current NAV in BASE_CCY (USD)
         """
-        total_market_value = self.cash
+        fx_rates = fx_rates or get_fx_rates()
+
+        # Start with cash converted to base currency
+        total_nav = cash_in_base_ccy(self.cash_by_ccy, fx_rates)
 
         for inst_id, position in self.positions.items():
             try:
                 current_price = data_feed.get_last_price(inst_id)
                 position.market_price = current_price
-                total_market_value += position.market_value
             except Exception:
-                # Use last known price
-                total_market_value += position.market_value
+                # Use last known price - don't skip the position
+                pass
 
-        self.nav = total_market_value
+            # Use position_nav_value for correct NAV calculation
+            # This handles futures correctly (P&L only, not notional)
+            total_nav += position_nav_value(position, fx_rates)
+
+        self.nav = total_nav
         self.last_update = datetime.now()
         return self.nav
 
     def compute_exposures(
         self,
         data_feed: Optional[DataFeed] = None,
-        beta_estimates: Optional[Dict[str, float]] = None
+        beta_estimates: Optional[Dict[str, float]] = None,
+        fx_rates: Optional[FXRates] = None
     ) -> Tuple[float, float]:
         """
-        Compute gross and net exposures.
+        Compute gross and net exposures in BASE_CCY.
+
+        CRITICAL (ENGINE_FIX_PLAN Phase 2):
+        - Uses position_exposure for correct notional calculation
+        - All exposures converted to BASE_CCY
+        - Exposure != NAV (this is for risk, NAV is for capital)
 
         Args:
             data_feed: Data feed for price updates
             beta_estimates: Beta estimates for each instrument
+            fx_rates: FX rates for currency conversion
 
         Returns:
-            Tuple of (gross_exposure, net_exposure)
+            Tuple of (gross_exposure, net_exposure) in BASE_CCY
         """
+        fx_rates = fx_rates or get_fx_rates()
         beta_estimates = beta_estimates or {}
         long_exp = 0.0
         short_exp = 0.0
 
         for inst_id, position in self.positions.items():
             beta = beta_estimates.get(inst_id, 1.0)
-            beta_adjusted_value = position.market_value * beta
+
+            # Use position_exposure for correct calculation (includes futures notional)
+            exposure = position_exposure(position, fx_rates) * beta
 
             if position.quantity > 0:
-                long_exp += abs(beta_adjusted_value)
+                long_exp += abs(exposure)
             else:
-                short_exp += abs(beta_adjusted_value)
+                short_exp += abs(exposure)
 
         self.long_exposure = long_exp
         self.short_exposure = short_exp
@@ -264,6 +406,58 @@ class PortfolioState:
         self.net_exposure = long_exp - short_exp
 
         return self.gross_exposure, self.net_exposure
+
+    def reconcile_with_broker(
+        self,
+        broker_nlv: float,
+        halt_threshold_pct: float = 0.0025,
+        emergency_threshold_pct: float = 0.01
+    ) -> Tuple[bool, str]:
+        """
+        Reconcile internal NAV with broker's NetLiquidation.
+
+        Phase 3 (ENGINE_FIX_PLAN): Circuit breaker for trading.
+
+        Args:
+            broker_nlv: Broker's NetLiquidation value
+            halt_threshold_pct: Threshold for HALT (default 0.25%)
+            emergency_threshold_pct: Threshold for EMERGENCY (default 1.0%)
+
+        Returns:
+            Tuple of (can_trade: bool, status: str)
+        """
+        self.broker_nlv = broker_nlv
+
+        if broker_nlv <= 0:
+            self.reconciliation_status = "ERROR"
+            self.reconciliation_diff_pct = 0.0
+            return False, "ERROR: Invalid broker NLV"
+
+        # Calculate difference
+        diff = abs(self.nav - broker_nlv)
+        diff_pct = diff / broker_nlv
+        self.reconciliation_diff_pct = diff_pct
+
+        # Check thresholds
+        if diff_pct > emergency_threshold_pct:
+            self.reconciliation_status = "EMERGENCY"
+            return False, f"EMERGENCY STOP: NAV diff {diff_pct:.2%} > {emergency_threshold_pct:.2%}"
+
+        if diff_pct > halt_threshold_pct:
+            self.reconciliation_status = "HALT"
+            return False, f"HALT: NAV diff {diff_pct:.2%} > {halt_threshold_pct:.2%}"
+
+        self.reconciliation_status = "PASS"
+        return True, f"PASS: NAV diff {diff_pct:.2%}"
+
+    def can_trade(self) -> bool:
+        """
+        Check if trading is allowed based on reconciliation status.
+
+        Returns:
+            True if reconciliation passed and trading is allowed
+        """
+        return self.reconciliation_status == "PASS"
 
     def compute_sleeve_exposures(self) -> Dict[Sleeve, Tuple[float, float]]:
         """
@@ -430,8 +624,11 @@ class PortfolioState:
         """Convert portfolio state to dictionary for serialization."""
         return {
             "nav": self.nav,
-            "cash": self.cash,
+            "cash_by_ccy": self.cash_by_ccy,
             "initial_capital": self.initial_capital,
+            "broker_nlv": self.broker_nlv,
+            "reconciliation_status": self.reconciliation_status,
+            "reconciliation_diff_pct": self.reconciliation_diff_pct,
             "gross_exposure": self.gross_exposure,
             "net_exposure": self.net_exposure,
             "long_exposure": self.long_exposure,
@@ -454,6 +651,7 @@ class PortfolioState:
                     "market_price": pos.market_price,
                     "multiplier": pos.multiplier,
                     "currency": pos.currency,
+                    "instrument_type": pos.instrument_type.value,
                     "sleeve": pos.sleeve.value
                 }
                 for inst_id, pos in self.positions.items()
@@ -466,10 +664,18 @@ class PortfolioState:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PortfolioState":
         """Create portfolio state from dictionary."""
+        # Handle backward compatibility: old 'cash' field -> new cash_by_ccy
+        cash_by_ccy = data.get("cash_by_ccy", {})
+        if not cash_by_ccy and "cash" in data:
+            cash_by_ccy = {"USD": data["cash"]}
+
         state = cls(
             nav=data.get("nav", 0.0),
-            cash=data.get("cash", 0.0),
+            cash_by_ccy=cash_by_ccy,
             initial_capital=data.get("initial_capital", 0.0),
+            broker_nlv=data.get("broker_nlv", 0.0),
+            reconciliation_status=data.get("reconciliation_status", "NOT_CHECKED"),
+            reconciliation_diff_pct=data.get("reconciliation_diff_pct", 0.0),
             gross_exposure=data.get("gross_exposure", 0.0),
             net_exposure=data.get("net_exposure", 0.0),
             long_exposure=data.get("long_exposure", 0.0),
@@ -493,13 +699,21 @@ class PortfolioState:
 
         # Parse positions
         for inst_id, pos_data in data.get("positions", {}).items():
+            # Parse instrument type
+            inst_type_str = pos_data.get("instrument_type", "STK")
+            try:
+                inst_type = InstrumentType(inst_type_str)
+            except ValueError:
+                inst_type = InstrumentType.STK
+
             state.positions[inst_id] = Position(
                 instrument_id=inst_id,
                 quantity=pos_data["quantity"],
                 avg_cost=pos_data["avg_cost"],
+                currency=pos_data.get("currency", "USD"),  # Required but with fallback
                 market_price=pos_data.get("market_price", pos_data["avg_cost"]),
                 multiplier=pos_data.get("multiplier", 1.0),
-                currency=pos_data.get("currency", "USD"),
+                instrument_type=inst_type,
                 sleeve=Sleeve(pos_data.get("sleeve", "core_index_rv"))
             )
 

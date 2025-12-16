@@ -13,14 +13,126 @@ rebalance_threshold_pct: 0.02    # 2% drift threshold triggers rebalance
 hedge_budget_annual_pct: 0.025   # 2.5% NAV/year for tail hedges
 max_drawdown_pct: 0.10           # 10% emergency de-risk trigger
 
+# ============================================================================
+# ENGINE_FIX_PLAN Settings (Phases 1-10)
+# ============================================================================
+
+# Phase 1: FX Rates Configuration
+fx:
+  base_currency: "USD"           # All positions converted to this currency
+  max_age_hours: 24              # FX rates considered stale after this
+  fallback_to_cache: true        # Use cached rates if refresh fails
+
+# Phase 3: Broker Reconciliation Circuit Breaker
+reconciliation:
+  halt_threshold_pct: 0.0025     # 0.25% difference triggers HALT
+  emergency_threshold_pct: 0.01  # 1% difference triggers EMERGENCY
+  enabled: true                  # Enable reconciliation checks
+
+# Phase 6: Volatility Targeting with EWMA
+volatility:
+  floor: 0.08                    # 8% floor - never assume vol below this
+  cap: 0.60                      # 60% cap - clip extreme vol readings
+  ewma_weight: 0.10              # 10% weight on new observation (decay)
+  lookback_days: 20              # Days for realized vol calculation
+
+# Phase 7: Regime Hysteresis
+hysteresis:
+  persistence_days: 3            # Days regime must persist before change
+  vol_enter_threshold: 0.18      # Enter ELEVATED when vol > 18%
+  vol_exit_threshold: 0.14       # Exit ELEVATED when vol < 14%
+  vix_enter_threshold: 25        # Enter ELEVATED when VIX > 25
+  vix_exit_threshold: 20         # Exit ELEVATED when VIX < 20
+  crisis_vol_threshold: 0.30     # Enter CRISIS when vol > 30%
+  crisis_vix_threshold: 35       # Enter CRISIS when VIX > 35
+
+# Phase 8: Risk State Machine
+risk_states:
+  normal:
+    scaling_factor: 1.0
+  elevated:
+    scaling_factor: 0.7          # Reduce exposure to 70%
+  crisis:
+    scaling_factor: 0.3          # Reduce exposure to 30%
+
+# Phase 9: Execution Safety Guards
+execution_safety:
+  max_order_value_pct: 0.10      # Max single order = 10% of NAV
+  max_daily_turnover_pct: 0.50   # Max 50% turnover per day
+  min_time_between_trades_sec: 5 # Rate limiting
+  enabled: true                  # Enable safety checks
+
+# ============================================================================
+# EXECUTION STACK UPGRADE - Alpha Capture & Slippage Reduction
+# ============================================================================
+
+execution:
+  # Policy selection
+  default_policy: "marketable_limit"      # marketable_limit | auction_open | auction_close | adaptive | vwap | twap
+  allow_market_orders: false              # NEVER allow market orders unless explicitly overridden
+
+  # Timeouts and replace logic
+  order_ttl_seconds: 120                  # Max time before cancelling unfilled order
+  replace_interval_seconds: 15            # Reprice unfilled orders every N seconds
+  max_replace_attempts: 6                 # Max reprice attempts before cancel
+
+  # Slippage / collars (basis points)
+  default_max_slippage_bps: 10            # Default max slippage
+  max_slippage_bps_by_asset_class:
+    ETF: 10
+    STK: 12
+    FUT: 3
+    FX_FUT: 2
+
+  # Turnover control
+  min_trade_notional_usd: 2500            # Don't trade below this notional
+  rebalance_drift_threshold_pct: 0.02     # Must drift >2% to trade (reuse existing)
+
+  # Pair execution / legging protection
+  pair_max_legging_seconds: 60            # Max time before hedge or undo
+  pair_hedge_enabled: true                # Enable temporary hedging
+  pair_min_hedge_trigger_fill_pct: 0.30   # Trigger hedge when one leg >30% filled
+
+  # Slicing for large orders
+  adv_fraction_threshold: 0.01            # Slice if order > 1% of ADV
+  max_participation_rate: 0.10            # Max 10% POV when slicing
+  slice_interval_seconds: 20              # Time between slices
+
+  # Session timing controls
+  avoid_first_minutes_after_open: 15      # Avoid first 15 min after open
+  avoid_last_minutes_before_close: 10     # Avoid last 10 min before close
+
+  # Data freshness
+  max_data_age_seconds: 30                # Reject orders if data older than this
+
 # Sleeve Allocations (risk weights)
+# STRATEGY EVOLUTION: Reduced equity L/S, increased Europe vol convexity
 sleeves:
-  core_index_rv: 0.35            # Core US vs EU index spread
-  sector_rv: 0.25                # Sector relative value
-  single_name: 0.15              # Single stock L/S
-  credit_carry: 0.15             # Credit & carry
-  crisis_alpha: 0.05             # Crisis alpha / sovereign stress
-  cash_buffer: 0.05              # Cash/margin buffer
+  core_index_rv: 0.20            # Core US vs EU index spread (reduced from 0.35)
+  sector_rv: 0.20                # Sector relative value (factor-neutral)
+  single_name: 0.10              # Single stock L/S (trend-gated)
+  credit_carry: 0.15             # Credit & carry (regime-adaptive)
+  europe_vol_convex: 0.15        # NEW: VSTOXX calls + SX5E put spreads
+  crisis_alpha: 0.10             # Crisis alpha / sovereign stress (increased)
+  cash_buffer: 0.10              # Cash/margin buffer (increased for safety)
+
+# =============================================================================
+# STRATEGY EVOLUTION: Trend Filter for Core RV
+# Prevents bleeding during EU outperformance periods
+# =============================================================================
+trend_filter:
+  enabled: true
+  # Lookback periods for US/EU relative momentum
+  short_lookback_days: 60        # 3-month momentum
+  long_lookback_days: 252        # 12-month momentum
+  # Thresholds for position adjustment
+  positive_momentum_threshold: 0.02   # +2% = full size
+  negative_momentum_threshold: -0.05  # -5% = cut to 25%
+  # Sizing multipliers based on momentum
+  full_size_multiplier: 1.0
+  reduced_size_multiplier: 0.25
+  # Use options-only when momentum very negative
+  options_only_threshold: -0.10       # -10% = switch to options only
 
 # Momentum / Regime Filter
 momentum:
@@ -94,3 +206,268 @@ quant_assumptions:
   eurostoxx_annual_return: 0.03   # 3% expected
   index_volatility: 0.15          # 15% for both
   correlation_us_eu: 0.82         # Correlation between US and EU
+
+# ============================================================================
+# EXECUTION PHASE 2 - Production Alpha Upgrades
+# Session-Aware Scheduling | Live Market Data | Legging Overlays | Cost Gates
+# Self-Tuning Slippage | Borrow/Dividend/Financing Hooks
+# ============================================================================
+
+execution_phase2:
+  enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Session-aware orchestration
+  # ---------------------------------------------------------------------------
+  session_scheduler:
+    enabled: true
+    precompute_time_utc: "06:00"        # Daily precompute at 06:00 UTC
+    poll_interval_seconds: 30           # Check for executable jobs every 30s
+    job_persistence_path: "state/execution_jobs.json"
+
+    venues:
+      EU:
+        timezone: "Europe/Berlin"
+        open_offset_minutes: 15          # Avoid first 15 min after open
+        close_offset_minutes: 10         # Avoid last 10 min before close
+        close_auction_minutes: 5         # Close auction window
+        allow_open_auction: false
+        allow_close_auction: true
+        instruments_pattern: ["*.DE", "*.L", "*.PA", "*.AS", "*.MI"]
+
+      US:
+        timezone: "America/New_York"
+        open_offset_minutes: 15
+        close_offset_minutes: 10
+        close_auction_minutes: 5
+        allow_open_auction: false
+        allow_close_auction: true
+        instruments_pattern: ["*.US", "SPY", "QQQ", "IWM"]
+
+      FX:
+        timezone: "UTC"
+        avoid_window_utc: ["21:55", "22:10"]  # Avoid FX roll / illiquid window
+        min_hedge_usd_notional: 25000
+        rebalance_band_usd_notional: 50000
+
+      FUT:
+        timezone: "UTC"
+        avoid_window_utc: ["21:55", "22:10"]  # Avoid maintenance/roll windows
+
+  # ---------------------------------------------------------------------------
+  # Hard data feed split (Live vs Research)
+  # ---------------------------------------------------------------------------
+  market_data:
+    live_provider: "ibkr_only"          # IBKR only for live trading
+    allow_yahoo_in_live: false          # NEVER use Yahoo in live mode
+    live_snapshot_timeout_ms: 1500      # Timeout for live data requests
+    min_quote_quality:
+      require_bid_ask_for_limit_pricing: true
+      max_mid_staleness_seconds: 5      # Reject quotes older than 5s
+
+  # ---------------------------------------------------------------------------
+  # Legging overlays (temporary hedges)
+  # ---------------------------------------------------------------------------
+  overlays:
+    enabled: true
+    max_unhedged_seconds: 60            # Max time before deploying overlay
+    overlay_notional_cap_pct_nav: 0.10  # Max 10% NAV in overlays
+    auto_unwind_on_fill: true           # Auto-unwind when lagging leg fills
+    overlay_proxies:
+      US_EQUITY: "ES"           # S&P 500 E-mini futures
+      EU_EQUITY: "FESX"         # Euro Stoxx 50 futures
+      FX_EUR: "M6E"             # Micro EUR/USD futures
+      FX_GBP: "M6B"             # Micro GBP/USD futures
+      US_BOND: "ZN"             # 10-Year T-Note futures
+      EU_BOND: "FGBL"           # Euro-Bund futures
+
+  # ---------------------------------------------------------------------------
+  # Cost-vs-benefit gating ("no-trade zones")
+  # ---------------------------------------------------------------------------
+  gating:
+    enabled: true
+    min_drift_pct: 0.002                # 0.2% minimum drift to consider trade
+    cost_multiplier: 1.5                # Require benefit > 1.5x predicted cost
+    always_trade_if_limit_breach: true  # Override gating for risk breaches
+    commission_bps_default: 0.5         # Default commission estimate
+    regime_multipliers:
+      NORMAL: 1.0
+      ELEVATED: 1.5
+      CRISIS: 2.5
+
+  # ---------------------------------------------------------------------------
+  # Self-tuning slippage model
+  # ---------------------------------------------------------------------------
+  slippage_model:
+    enabled: true
+    lookback_trades: 200                # Trades to consider for calibration
+    min_trades_per_instrument: 15       # Min samples before using instrument-specific
+    percentile_for_limits: 0.70         # Use p70 as limit offset baseline
+    safety_buffer_bps: 1.0              # Additional buffer on top of model
+    clamp_bps: [0.5, 25.0]              # Clamp extreme values [min, max]
+    persist_path: "state/slippage_model.json"
+    update_frequency: "daily"           # "daily" or "after_each_trade"
+
+  # ---------------------------------------------------------------------------
+  # Borrow / dividends / financing realism
+  # ---------------------------------------------------------------------------
+  carry_realism:
+    enabled: true
+
+    borrow:
+      enabled: true
+      deny_new_short_if_unavailable: true
+      default_borrow_fee_bps_annual: 150.0    # 1.5% default borrow cost
+      max_borrow_fee_bps_annual: 600.0        # 6% max before warning
+      hard_to_borrow_threshold_bps: 300.0     # 3% = hard to borrow
+
+    dividends:
+      enabled: true
+      warn_on_upcoming_ex_div_days: 3         # Warn 3 days before ex-div
+      default_short_dividend_buffer_bps: 5.0  # Buffer for short dividend cost
+
+    financing:
+      enabled: true
+      default_cash_rate_by_ccy:
+        USD: 0.045    # 4.5% USD rate
+        EUR: 0.030    # 3.0% EUR rate
+        GBP: 0.045    # 4.5% GBP rate
+        CHF: 0.015    # 1.5% CHF rate
+        JPY: 0.001    # 0.1% JPY rate
+
+# ============================================================================
+# ROADMAP Phase B: Europe-First Regime Detection
+# Multi-factor regime model for "insurance for Europeans" positioning
+# ============================================================================
+europe_regime:
+  # Weights for stress score (should sum to 1.0)
+  v2x_weight: 0.4             # V2X (VSTOXX) component - European vol
+  vix_weight: 0.3             # VIX component - US vol
+  eurusd_trend_weight: 0.2    # EURUSD trend - EUR weakening is stress
+  drawdown_weight: 0.1        # Portfolio drawdown component
+
+  # Lookback for EURUSD trend calculation
+  eurusd_trend_lookback_days: 60
+
+  # Stress score thresholds (0-1 scale)
+  stress_elevated_threshold: 0.3  # Score > 0.3 = ELEVATED
+  stress_crisis_threshold: 0.6    # Score > 0.6 = CRISIS
+
+# ============================================================================
+# ROADMAP Phase C: FX Hedge Policy
+# Configurable FX hedging with regime-based overrides
+# ============================================================================
+fx_hedge:
+  mode: "PARTIAL"  # FULL | PARTIAL | NONE
+
+  # Target residual FX exposure as % of NAV
+  target_residual_pct_nav:
+    FULL: 0.02      # 2% max residual (hedge 98%)
+    PARTIAL: 0.25   # 25% max residual (hedge 75%)
+    NONE: 1.00      # 100% residual (no hedge)
+
+  # Regime-based mode overrides
+  # In CRISIS, let USD exposure pay off (no FX hedge)
+  regime_overrides:
+    NORMAL: "PARTIAL"
+    ELEVATED: "PARTIAL"
+    CRISIS: "NONE"
+    RECOVERY: "PARTIAL"
+
+# ============================================================================
+# ROADMAP Phase D: Option Validator
+# Prevents execution of illiquid or overpriced tail hedges
+# ============================================================================
+option_validator:
+  # Maximum bid-ask spread as % of mid price
+  max_spread_pct_equity_puts: 0.08   # 8%
+  max_spread_pct_vix_calls: 0.12     # 12% (VIX options often wider)
+  max_spread_pct_credit_puts: 0.10   # 10%
+
+  # Minimum daily volume thresholds
+  min_volume_equity_puts: 100
+  min_volume_vix_calls: 50
+  min_volume_credit_puts: 50
+
+  # Minimum open interest thresholds
+  min_open_interest_equity_puts: 500
+  min_open_interest_vix_calls: 200
+  min_open_interest_credit_puts: 200
+
+  # Premium limits
+  max_premium_per_leg_usd: 50000     # $50k max per leg
+  max_premium_pct_budget: 0.25       # 25% of hedge budget per leg
+
+  # Minimum days to expiry (don't buy near-expiry options)
+  min_dte: 14
+
+# =============================================================================
+# STRATEGY EVOLUTION: Europe Vol Convexity Sleeve
+# Primary insurance channel via VSTOXX and SX5E structures
+# =============================================================================
+europe_vol_convex:
+  enabled: true
+  # Budget allocation within sleeve
+  vstoxx_calls_pct: 0.50         # 50% to VSTOXX call structures
+  sx5e_puts_pct: 0.35            # 35% to SX5E put spreads
+  eu_banks_puts_pct: 0.15        # 15% to EU banks stress hedges
+
+  # VSTOXX Call Structure (call spreads/ladders)
+  vstoxx:
+    target_strike_offset: 5.0    # Buy calls 5 points OTM
+    spread_width: 10.0           # Sell calls 10 points higher (call spread)
+    target_dte_days: 60          # 2-month expiry
+    roll_dte_days: 21            # Roll at 21 DTE
+    max_premium_pct_budget: 0.40 # Max 40% of sleeve budget per structure
+
+  # SX5E Put Spread Structure
+  sx5e:
+    put_strike_otm_pct: 0.10     # Buy 10% OTM puts
+    spread_width_pct: 0.05       # Sell 15% OTM (5% spread width)
+    target_dte_days: 90          # 3-month expiry
+    roll_dte_days: 30            # Roll at 30 DTE
+    ratio_spread_enabled: true   # Use 1x2 ratio spreads to reduce cost
+
+  # EU Banks Stress Hedges (SX7E or bank ETF puts)
+  eu_banks:
+    put_strike_otm_pct: 0.15     # 15% OTM
+    target_dte_days: 60
+    roll_dte_days: 21
+
+# =============================================================================
+# STRATEGY EVOLUTION: Factor Neutralization for Sector RV
+# Removes unintended growth/value exposure
+# =============================================================================
+factor_neutral:
+  enabled: true
+  # Target factor exposures (0 = neutral)
+  target_beta: 0.0               # Market neutral
+  target_value_growth: 0.0       # Style neutral
+  max_factor_deviation: 0.15     # Max 15% deviation from targets
+  # Rebalance triggers
+  factor_drift_threshold: 0.10   # Rebalance when factor drifts > 10%
+  # Factor estimation method
+  use_rolling_betas: true
+  beta_lookback_days: 60
+
+# ============================================================================
+# ROADMAP Phase E: Research/Backtest Cost Model
+# Realistic transaction costs for historical validation
+# ============================================================================
+research_costs:
+  equity_slippage_bps: 5
+  etf_slippage_bps: 4
+  futures_slippage_bps: 1
+  fx_slippage_bps: 2
+  commissions_per_trade_usd: 1.0
+  short_dividend_bps_annual: 200      # Dividends paid out on shorts
+  borrow_bps_annual: 50               # General borrow cost
+  financing_rate_annual: 0.05         # 5% for futures margin
+
+# ============================================================================
+# ROADMAP Phase A: Run Ledger (Exactly-Once Execution)
+# ============================================================================
+run_ledger:
+  enabled: true
+  db_path: "state/run_ledger.db"
+  cleanup_days: 90                    # Keep 90 days of run history

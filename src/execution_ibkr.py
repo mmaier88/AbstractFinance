@@ -1,10 +1,17 @@
 """
 IBKR execution engine for AbstractFinance.
 Handles order placement, position management, and account data via ib_insync.
+
+This module provides two interfaces:
+1. IBClient - Low-level IB Gateway communication
+2. IBKRTransport - BrokerTransport implementation for new execution stack
+
+ENGINE_FIX_PLAN Phase 9: Execution Safety
+EXECUTION_STACK_UPGRADE: IBKRTransport for stateful execution layer
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -20,9 +27,25 @@ except ImportError:
     IB_AVAILABLE = False
 
 from .strategy_logic import OrderSpec
-from .portfolio import Position, Sleeve
+from .portfolio import Position, Sleeve, PortfolioState, InstrumentType
 from .logging_utils import TradingLogger, get_trading_logger
 from .alerts import AlertManager, Alert, AlertType, AlertSeverity
+
+# Import new execution types
+try:
+    from .execution.types import MarketDataSnapshot
+    from .execution.order_manager import BrokerTransport, OrderUpdate
+    EXECUTION_STACK_AVAILABLE = True
+except ImportError:
+    EXECUTION_STACK_AVAILABLE = False
+
+
+# Phase 9: Execution safety constants
+MARKET_OPEN_BUFFER_MINUTES = 15  # No market orders within 15 min of open
+US_MARKET_OPEN = dt_time(9, 30)  # 9:30 AM ET
+US_MARKET_CLOSE = dt_time(16, 0)  # 4:00 PM ET
+EU_MARKET_OPEN = dt_time(9, 0)  # 9:00 AM CET
+EU_MARKET_CLOSE = dt_time(17, 30)  # 5:30 PM CET
 
 # Metrics integration
 try:
@@ -766,18 +789,449 @@ class IBClient:
             for ex in executions
         ]
 
+    def get_account_nav(self) -> Optional[float]:
+        """Get account NAV for reconciliation."""
+        if not self.is_connected():
+            return None
+        try:
+            summary = self.get_account_summary()
+            return summary.net_liquidation
+        except Exception:
+            return None
 
-class ExecutionEngine:
+
+# =============================================================================
+# EXECUTION STACK UPGRADE: IBKRTransport
+# =============================================================================
+
+class IBKRTransport:
     """
-    High-level execution engine for strategy orders.
-    Wraps IBClient with additional logic for order management.
+    BrokerTransport implementation for Interactive Brokers.
+
+    This class bridges the new execution stack (OrderManager, ExecutionPolicy)
+    with the IBKR API via IBClient.
+
+    EXECUTION_STACK_UPGRADE: Stateful execution with:
+    - Marketable limit orders with collars
+    - Order state machine (NEW -> SUBMITTED -> FILLED)
+    - Cancel/replace logic for unfilled orders
+    - Market data snapshots for slippage tracking
     """
 
     def __init__(
         self,
         ib_client: IBClient,
         instruments_config: Dict[str, Any],
-        logger: Optional[TradingLogger] = None
+        logger: Optional[TradingLogger] = None,
+    ):
+        """
+        Initialize IBKR transport.
+
+        Args:
+            ib_client: Connected IBClient instance
+            instruments_config: Instrument configuration dict
+            logger: Trading logger instance
+        """
+        if not EXECUTION_STACK_AVAILABLE:
+            raise ImportError("Execution stack not available. Check src/execution/ package.")
+
+        self.ib_client = ib_client
+        self.instruments_config = instruments_config
+        self.logger = logger or get_trading_logger()
+
+        # Track active trades by broker_order_id
+        self._active_trades: Dict[int, Trade] = {}
+
+        # Internal order ID counter
+        self._next_order_id = 1
+
+    @property
+    def ib(self) -> Optional[Any]:
+        """Get underlying IB instance."""
+        return self.ib_client.ib if self.ib_client else None
+
+    def submit_order(
+        self,
+        instrument_id: str,
+        side: str,
+        quantity: int,
+        order_type: str,
+        limit_price: Optional[float],
+        tif: str,
+        algo: Optional[str] = None,
+        algo_params: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """
+        Submit order to IBKR.
+
+        Args:
+            instrument_id: Internal instrument ID
+            side: "BUY" or "SELL"
+            quantity: Number of shares/contracts
+            order_type: "LMT", "MKT", etc.
+            limit_price: Limit price (required for LMT)
+            tif: Time in force ("DAY", "GTC", etc.)
+            algo: Optional algo type (e.g., "ADAPTIVE")
+            algo_params: Optional algo parameters
+
+        Returns:
+            broker_order_id for tracking
+
+        Raises:
+            ConnectionError: If not connected
+            ValueError: If contract cannot be built
+        """
+        if not self.ib_client.is_connected():
+            raise ConnectionError("Not connected to IB Gateway")
+
+        # Build contract
+        contract = self.ib_client.build_contract(instrument_id, self.instruments_config)
+        if not contract:
+            raise ValueError(f"Could not build contract for {instrument_id}")
+
+        # Build order
+        if order_type.upper() == "MKT":
+            order = MarketOrder(side, quantity)
+        elif order_type.upper() == "LMT":
+            order = LimitOrder(side, quantity, limit_price)
+        else:
+            order = LimitOrder(side, quantity, limit_price)
+
+        # Set TIF
+        order.tif = tif
+
+        # Handle algo orders
+        if algo == "ADAPTIVE":
+            order.algoStrategy = "Adaptive"
+            order.algoParams = []
+            if algo_params:
+                priority = algo_params.get("adaptivePriority", "Normal")
+                from ib_insync import TagValue
+                order.algoParams.append(TagValue("adaptivePriority", priority))
+
+        # Place order
+        trade = self.ib_client.ib.placeOrder(contract, order)
+
+        # Track the trade
+        broker_order_id = trade.order.orderId
+        self._active_trades[broker_order_id] = trade
+
+        self.logger.log_order(
+            order_id=str(broker_order_id),
+            instrument_id=instrument_id,
+            side=side,
+            quantity=quantity,
+            order_type=order_type,
+            price=limit_price,
+            status="submitted"
+        )
+
+        # Record metric
+        if METRICS_AVAILABLE:
+            record_order_submitted(instrument_id, side, "execution_stack")
+
+        return broker_order_id
+
+    def cancel_order(self, broker_order_id: int) -> bool:
+        """
+        Cancel an order.
+
+        Args:
+            broker_order_id: IBKR order ID
+
+        Returns:
+            True if cancel request was sent
+        """
+        trade = self._active_trades.get(broker_order_id)
+        if not trade:
+            return False
+
+        try:
+            self.ib_client.ib.cancelOrder(trade.order)
+            return True
+        except Exception as e:
+            self.logger.logger.warning(f"Cancel failed for order {broker_order_id}: {e}")
+            return False
+
+    def modify_order(
+        self,
+        broker_order_id: int,
+        new_limit_price: float,
+    ) -> bool:
+        """
+        Modify order limit price (cancel/replace).
+
+        Args:
+            broker_order_id: IBKR order ID
+            new_limit_price: New limit price
+
+        Returns:
+            True if modification was sent
+        """
+        trade = self._active_trades.get(broker_order_id)
+        if not trade:
+            return False
+
+        try:
+            # Modify by updating order object and re-placing
+            trade.order.lmtPrice = new_limit_price
+            self.ib_client.ib.placeOrder(trade.contract, trade.order)
+            return True
+        except Exception as e:
+            self.logger.logger.warning(f"Modify failed for order {broker_order_id}: {e}")
+            return False
+
+    def get_order_status(self, broker_order_id: int) -> Optional['OrderUpdate']:
+        """
+        Get current order status from IBKR.
+
+        Args:
+            broker_order_id: IBKR order ID
+
+        Returns:
+            OrderUpdate with current status, or None if not found
+        """
+        if not EXECUTION_STACK_AVAILABLE:
+            return None
+
+        trade = self._active_trades.get(broker_order_id)
+        if not trade:
+            return None
+
+        # Ensure we have latest status
+        self.ib_client.ib.sleep(0.1)
+
+        # Get fill info
+        total_commission = sum(
+            fill.commissionReport.commission
+            for fill in trade.fills
+            if fill.commissionReport and fill.commissionReport.commission
+        )
+
+        # Get last fill info
+        last_fill_price = None
+        last_fill_qty = None
+        if trade.fills:
+            last_fill = trade.fills[-1]
+            last_fill_price = last_fill.execution.price
+            last_fill_qty = int(last_fill.execution.shares)
+
+        return OrderUpdate(
+            broker_order_id=broker_order_id,
+            status=trade.orderStatus.status,
+            filled_qty=int(trade.orderStatus.filled),
+            remaining_qty=int(trade.orderStatus.remaining),
+            avg_fill_price=trade.orderStatus.avgFillPrice if trade.orderStatus.avgFillPrice else None,
+            last_fill_price=last_fill_price,
+            last_fill_qty=last_fill_qty,
+            commission=total_commission,
+            error_message=None if trade.orderStatus.status != "Inactive" else "Order inactive",
+        )
+
+    def get_market_data(self, instrument_id: str) -> Optional['MarketDataSnapshot']:
+        """
+        Get current market data snapshot for instrument.
+
+        Args:
+            instrument_id: Internal instrument ID
+
+        Returns:
+            MarketDataSnapshot with current prices
+        """
+        if not EXECUTION_STACK_AVAILABLE:
+            return None
+
+        if not self.ib_client.is_connected():
+            return None
+
+        contract = self.ib_client.build_contract(instrument_id, self.instruments_config)
+        if not contract:
+            return None
+
+        try:
+            ticker = self.ib_client.ib.reqMktData(contract, '', False, False)
+            self.ib_client.ib.sleep(1)  # Wait for data
+
+            last = ticker.last if ticker.last and ticker.last > 0 else None
+            bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
+            ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
+            close = ticker.close if ticker.close and ticker.close > 0 else None
+
+            self.ib_client.ib.cancelMktData(contract)
+
+            # Handle GBP pence conversion
+            if contract.currency == 'GBP':
+                if last and last > 100:
+                    last = last / 100.0
+                if bid and bid > 100:
+                    bid = bid / 100.0
+                if ask and ask > 100:
+                    ask = ask / 100.0
+                if close and close > 100:
+                    close = close / 100.0
+
+            return MarketDataSnapshot(
+                symbol=instrument_id,
+                ts=datetime.now(),
+                last=last,
+                bid=bid,
+                ask=ask,
+                close=close,
+            )
+
+        except Exception as e:
+            self.logger.logger.warning(f"Market data fetch failed for {instrument_id}: {e}")
+            return None
+
+    def wait_for_fills(
+        self,
+        broker_order_ids: List[int],
+        timeout_seconds: float = 30,
+    ) -> Dict[int, 'OrderUpdate']:
+        """
+        Wait for orders to complete (or timeout).
+
+        Args:
+            broker_order_ids: List of order IDs to wait for
+            timeout_seconds: Maximum wait time
+
+        Returns:
+            Dict of broker_order_id -> final OrderUpdate
+        """
+        results = {}
+        start = time.time()
+
+        while time.time() - start < timeout_seconds:
+            all_done = True
+
+            for order_id in broker_order_ids:
+                if order_id in results:
+                    continue
+
+                update = self.get_order_status(order_id)
+                if update:
+                    status_upper = update.status.upper()
+                    if status_upper in ("FILLED", "CANCELLED", "CANCELED", "REJECTED", "ERROR", "INACTIVE"):
+                        results[order_id] = update
+                    else:
+                        all_done = False
+                else:
+                    all_done = False
+
+            if all_done:
+                break
+
+            self.ib_client.ib.sleep(0.5)
+
+        # Get final status for any remaining
+        for order_id in broker_order_ids:
+            if order_id not in results:
+                update = self.get_order_status(order_id)
+                if update:
+                    results[order_id] = update
+
+        return results
+
+    def cleanup_trade(self, broker_order_id: int) -> None:
+        """Remove trade from tracking after completion."""
+        self._active_trades.pop(broker_order_id, None)
+
+
+def is_near_market_open(exchange: str = "US", buffer_minutes: int = MARKET_OPEN_BUFFER_MINUTES) -> bool:
+    """
+    Check if current time is within buffer of market open.
+
+    Phase 9: No market orders near open.
+
+    Args:
+        exchange: "US" or "EU"
+        buffer_minutes: Minutes after open to avoid
+
+    Returns:
+        True if within buffer of market open
+    """
+    now = datetime.now()
+    current_time = now.time()
+
+    if exchange == "US":
+        market_open = US_MARKET_OPEN
+    else:
+        market_open = EU_MARKET_OPEN
+
+    # Convert to minutes since midnight for easy comparison
+    open_minutes = market_open.hour * 60 + market_open.minute
+    current_minutes = current_time.hour * 60 + current_time.minute
+
+    # Check if within buffer after open
+    if current_minutes >= open_minutes and current_minutes < open_minutes + buffer_minutes:
+        return True
+
+    return False
+
+
+def check_execution_safety(
+    portfolio_state: PortfolioState,
+    fx_rates_valid: bool = True,
+    vol_estimate_valid: bool = True,
+    exchange: str = "US"
+) -> Tuple[bool, List[str]]:
+    """
+    Check all execution safety conditions.
+
+    Phase 9: Block orders if safety conditions not met.
+
+    Args:
+        portfolio_state: Current portfolio state
+        fx_rates_valid: Whether FX rates are fresh
+        vol_estimate_valid: Whether volatility estimate is valid
+        exchange: Primary exchange for timing check
+
+    Returns:
+        Tuple of (safe_to_execute: bool, reasons: List[str])
+    """
+    reasons = []
+    safe = True
+
+    # Check 1: NAV reconciliation must pass
+    if not portfolio_state.can_trade():
+        safe = False
+        reasons.append(f"NAV reconciliation failed: {portfolio_state.reconciliation_status}")
+
+    # Check 2: FX rates must be valid
+    if not fx_rates_valid:
+        safe = False
+        reasons.append("FX rates are stale or invalid")
+
+    # Check 3: Volatility estimate must be valid
+    if not vol_estimate_valid:
+        safe = False
+        reasons.append("Volatility estimate is invalid")
+
+    # Check 4: No market orders near open
+    if is_near_market_open(exchange):
+        safe = False
+        reasons.append(f"Within {MARKET_OPEN_BUFFER_MINUTES} min of {exchange} market open")
+
+    return safe, reasons
+
+
+class ExecutionEngine:
+    """
+    High-level execution engine for strategy orders.
+    Wraps IBClient with additional logic for order management.
+
+    ENGINE_FIX_PLAN Phase 9: Execution Safety
+    - Validates all safety conditions before placing orders
+    - Converts market orders to limit orders near open
+    - Blocks orders if reconciliation fails
+    """
+
+    def __init__(
+        self,
+        ib_client: IBClient,
+        instruments_config: Dict[str, Any],
+        logger: Optional[TradingLogger] = None,
+        portfolio_state: Optional[PortfolioState] = None
     ):
         """
         Initialize execution engine.
@@ -786,26 +1240,81 @@ class ExecutionEngine:
             ib_client: Connected IB client
             instruments_config: Instrument configuration
             logger: Trading logger
+            portfolio_state: Portfolio state for safety checks
         """
         self.ib_client = ib_client
         self.instruments_config = instruments_config
         self.logger = logger or get_trading_logger()
+        self.portfolio_state = portfolio_state
 
     def execute_strategy_orders(
         self,
         orders: List[OrderSpec],
-        dry_run: bool = False
+        dry_run: bool = False,
+        fx_rates_valid: bool = True,
+        vol_estimate_valid: bool = True
     ) -> Tuple[List[ExecutionReport], Dict[str, Any]]:
         """
-        Execute strategy orders with validation.
+        Execute strategy orders with validation and safety checks.
+
+        ENGINE_FIX_PLAN Phase 9: Execution Safety
+        - Checks all safety conditions before execution
+        - Blocks orders if any safety check fails
+        - Logs reasons for blocked orders
 
         Args:
             orders: List of orders to execute
             dry_run: If True, validate but don't execute
+            fx_rates_valid: Whether FX rates are fresh
+            vol_estimate_valid: Whether volatility estimate is valid
 
         Returns:
             Tuple of (reports, summary_stats)
         """
+        # Phase 9: Check execution safety conditions
+        if self.portfolio_state is not None:
+            safe, safety_reasons = check_execution_safety(
+                self.portfolio_state,
+                fx_rates_valid=fx_rates_valid,
+                vol_estimate_valid=vol_estimate_valid
+            )
+
+            if not safe:
+                # Log blocked execution
+                self.logger.logger.warning(
+                    "execution_blocked",
+                    extra={
+                        "reasons": safety_reasons,
+                        "order_count": len(orders),
+                        "reconciliation_status": self.portfolio_state.reconciliation_status
+                    }
+                )
+
+                # Return rejected reports for all orders
+                reports = [
+                    ExecutionReport(
+                        order_id=str(i),
+                        instrument_id=order.instrument_id,
+                        status=OrderStatus.REJECTED,
+                        error_message=f"Execution blocked: {', '.join(safety_reasons)}"
+                    )
+                    for i, order in enumerate(orders)
+                ]
+
+                summary = {
+                    "total_orders": len(orders),
+                    "filled": 0,
+                    "partial": 0,
+                    "rejected": len(orders),
+                    "invalid": 0,
+                    "blocked": True,
+                    "block_reasons": safety_reasons,
+                    "total_commission": 0.0,
+                    "total_value": 0.0
+                }
+
+                return reports, summary
+
         # Validate orders
         valid_orders, invalid_orders = self._validate_orders(orders)
 
@@ -825,6 +1334,8 @@ class ExecutionEngine:
 
         # Build summary
         summary = self._build_execution_summary(reports, invalid_orders)
+        summary["blocked"] = False
+        summary["block_reasons"] = []
 
         return reports, summary
 

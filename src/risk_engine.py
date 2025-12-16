@@ -1,13 +1,18 @@
 """
 Risk engine for AbstractFinance.
 Handles volatility targeting, drawdown control, exposure limits, and risk decisions.
+
+ENGINE_FIX_PLAN Updates:
+- Phase 6: Volatility targeting with EWMA, floor, and clip
+- Phase 7: Regime system with hysteresis (no single-day flip-flopping)
+- Phase 8: Emergency de-risk as state machine (not multiplicative stacking)
 """
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .portfolio import PortfolioState, Sleeve
@@ -19,6 +24,16 @@ class RiskRegime(Enum):
     ELEVATED = "elevated"
     CRISIS = "crisis"
     RECOVERY = "recovery"
+
+
+class RiskState(Enum):
+    """
+    Risk state machine for Phase 8 (emergency de-risk).
+    Replaces multiplicative stacking with explicit states.
+    """
+    NORMAL = 1.0
+    ELEVATED = 0.7
+    CRISIS = 0.3
 
 
 @dataclass
@@ -65,6 +80,16 @@ class RiskEngine:
     """
     Risk management engine for the portfolio.
     Implements volatility targeting, drawdown control, and regime-based adjustments.
+
+    ENGINE_FIX_PLAN Updates:
+    - Phase 6: EWMA volatility with floor and clip
+    - Phase 7: Regime hysteresis (N days to switch)
+    - Phase 8: Risk state machine (not multiplicative)
+
+    ROADMAP Phase B: Europe-First Regime Detection
+    - Uses V2X (VSTOXX) + VIX + EURUSD trend + drawdown
+    - Configurable weights for stress score
+    - Graceful degradation when V2X unavailable
     """
 
     def __init__(self, settings: Dict[str, Any]):
@@ -81,6 +106,12 @@ class RiskEngine:
         self.max_drawdown_pct = settings.get('max_drawdown_pct', 0.10)
         self.rebalance_threshold = settings.get('rebalance_threshold_pct', 0.02)
 
+        # Phase 6: Volatility floor and EWMA settings
+        vol_settings = settings.get('volatility', {})
+        self.vol_floor = vol_settings.get('floor', 0.08)  # 8% minimum vol assumption
+        self.ewma_span = vol_settings.get('ewma_span', 20)  # EWMA span for vol calc
+        self.vol_blend_weight = vol_settings.get('blend_weight', 0.7)  # 70% EWMA, 30% rolling
+
         # Momentum settings
         momentum_settings = settings.get('momentum', {})
         self.short_window = momentum_settings.get('short_window_days', 50)
@@ -91,6 +122,38 @@ class RiskEngine:
         crisis_settings = settings.get('crisis', {})
         self.vix_threshold = crisis_settings.get('vix_threshold', 40)
         self.pnl_spike_threshold = crisis_settings.get('pnl_spike_threshold_pct', 0.10)
+
+        # Phase 7: Hysteresis settings
+        hysteresis_settings = settings.get('hysteresis', {})
+        self.regime_persistence_days = hysteresis_settings.get('persistence_days', 3)
+        self.vix_enter_elevated = hysteresis_settings.get('vix_enter_elevated', 25)
+        self.vix_exit_elevated = hysteresis_settings.get('vix_exit_elevated', 20)
+        self.vix_enter_crisis = hysteresis_settings.get('vix_enter_crisis', 40)
+        self.vix_exit_crisis = hysteresis_settings.get('vix_exit_crisis', 35)
+
+        # Phase B: Europe-First Regime Detection weights
+        europe_regime_settings = settings.get('europe_regime', {})
+        self.v2x_weight = europe_regime_settings.get('v2x_weight', 0.4)
+        self.vix_weight = europe_regime_settings.get('vix_weight', 0.3)
+        self.eurusd_trend_weight = europe_regime_settings.get('eurusd_trend_weight', 0.2)
+        self.drawdown_weight = europe_regime_settings.get('drawdown_weight', 0.1)
+        self.eurusd_trend_lookback = europe_regime_settings.get('eurusd_trend_lookback_days', 60)
+        self.stress_score_elevated_threshold = europe_regime_settings.get('stress_elevated_threshold', 0.3)
+        self.stress_score_crisis_threshold = europe_regime_settings.get('stress_crisis_threshold', 0.6)
+
+        # Phase 7: Regime state tracking
+        self._current_regime = RiskRegime.NORMAL
+        self._regime_days_count = 0
+        self._pending_regime: Optional[RiskRegime] = None
+        self._pending_regime_days = 0
+
+        # Phase 8: Risk state machine
+        self._risk_state = RiskState.NORMAL
+
+        # Phase B: Cache for regime inputs
+        self._last_v2x: Optional[float] = None
+        self._last_eurusd_trend: Optional[float] = None
+        self._regime_inputs_missing: bool = False
 
     def compute_realized_vol_annual(
         self,
@@ -203,13 +266,18 @@ class RiskEngine:
         """
         Compute position scaling factor for volatility targeting.
 
+        ENGINE_FIX_PLAN Phase 6:
+        - Apply volatility floor before scaling
+        - Allow scaling > 1.0 (levering up in low vol)
+        - Clip to max leverage
+
         Args:
             realized_vol_annual: Current annualized volatility
             target_vol_annual: Target annualized volatility
             gross_leverage_max: Maximum gross leverage
 
         Returns:
-            Scaling factor to apply to positions (always returns valid float)
+            Scaling factor to apply to positions (0.0 to max_leverage)
         """
         target_vol = target_vol_annual or self.vol_target_annual
         max_leverage = gross_leverage_max or self.gross_leverage_max
@@ -218,13 +286,88 @@ class RiskEngine:
         if realized_vol_annual is None or pd.isna(realized_vol_annual) or realized_vol_annual <= 0:
             return 1.0
 
-        raw_scaling = target_vol / realized_vol_annual
+        # Phase 6: Apply volatility floor
+        floored_vol = max(self.vol_floor, realized_vol_annual)
+
+        # Compute raw scaling
+        raw_scaling = target_vol / floored_vol
 
         # Ensure we never return NaN or infinity
         if pd.isna(raw_scaling) or np.isinf(raw_scaling):
             return 1.0
 
-        return min(raw_scaling, max_leverage)
+        # Phase 6: Clip to [0.0, max_leverage]
+        # Now allows scaling > 1.0 for low vol periods
+        return np.clip(raw_scaling, 0.0, max_leverage)
+
+    def compute_ewma_vol(
+        self,
+        returns: pd.Series,
+        span: Optional[int] = None
+    ) -> float:
+        """
+        Compute EWMA (exponentially weighted) volatility.
+
+        Phase 6: More responsive to recent volatility changes.
+
+        Args:
+            returns: Daily returns series
+            span: EWMA span (default: self.ewma_span)
+
+        Returns:
+            Annualized EWMA volatility
+        """
+        span = span or self.ewma_span
+
+        if returns is None or len(returns) < 5:
+            return self.vol_target_annual
+
+        ewma_vol = returns.ewm(span=span).std().iloc[-1]
+
+        if pd.isna(ewma_vol) or ewma_vol <= 0:
+            return self.vol_target_annual
+
+        return ewma_vol * np.sqrt(252)
+
+    def compute_blended_vol(
+        self,
+        returns: pd.Series,
+        short_window: int = 20,
+        long_window: int = 60
+    ) -> float:
+        """
+        Compute blended volatility using EWMA and rolling.
+
+        Phase 6: Blend short-term responsiveness with long-term stability.
+
+        Formula: vol = blend_weight * ewma_vol + (1 - blend_weight) * rolling_vol
+
+        Args:
+            returns: Daily returns series
+            short_window: Short-term rolling window
+            long_window: Long-term rolling window
+
+        Returns:
+            Annualized blended volatility
+        """
+        if returns is None or len(returns) < short_window:
+            return self.vol_target_annual
+
+        # EWMA volatility (more responsive)
+        ewma_vol = self.compute_ewma_vol(returns)
+
+        # Rolling volatility (more stable)
+        window = min(len(returns), long_window)
+        rolling_vol = returns.tail(window).std() * np.sqrt(252)
+
+        if pd.isna(rolling_vol) or rolling_vol <= 0:
+            rolling_vol = ewma_vol
+
+        # Blend
+        blended = self.vol_blend_weight * ewma_vol + (1 - self.vol_blend_weight) * rolling_vol
+
+        # Apply floor
+        return max(self.vol_floor, blended)
 
     def compute_var(
         self,
@@ -285,7 +428,12 @@ class RiskEngine:
         current_drawdown: float
     ) -> RiskRegime:
         """
-        Detect current market risk regime.
+        Detect current market risk regime WITH HYSTERESIS.
+
+        ENGINE_FIX_PLAN Phase 7:
+        - Separate enter vs exit thresholds
+        - Regime must persist N days to switch
+        - No single-day flip-flopping
 
         Args:
             vix_level: Current VIX level
@@ -293,27 +441,260 @@ class RiskEngine:
             current_drawdown: Current portfolio drawdown
 
         Returns:
-            RiskRegime classification
+            RiskRegime classification (with hysteresis applied)
         """
-        # Crisis conditions
-        if vix_level >= self.vix_threshold or current_drawdown <= -self.max_drawdown_pct:
-            return RiskRegime.CRISIS
+        # Determine what regime TODAY'S conditions suggest
+        raw_regime = self._detect_raw_regime(vix_level, spread_momentum, current_drawdown)
 
-        # Elevated risk
-        if vix_level >= 25 or current_drawdown <= -0.05:
-            return RiskRegime.ELEVATED
+        # Apply hysteresis: only switch if new regime persists
+        if raw_regime != self._current_regime:
+            if raw_regime == self._pending_regime:
+                # Same pending regime - increment counter
+                self._pending_regime_days += 1
+            else:
+                # New pending regime - reset counter
+                self._pending_regime = raw_regime
+                self._pending_regime_days = 1
 
-        # Normal conditions - minor drawdown is normal market fluctuation
-        # A 3% drawdown is within normal range with low VIX
-        if current_drawdown > -0.03 and vix_level < 25:
-            return RiskRegime.NORMAL
+            # Check if persistence threshold met
+            # Exception: Always switch to CRISIS immediately (no delay)
+            if raw_regime == RiskRegime.CRISIS:
+                self._current_regime = RiskRegime.CRISIS
+                self._pending_regime = None
+                self._pending_regime_days = 0
+            elif self._pending_regime_days >= self.regime_persistence_days:
+                # Persistence threshold met - switch regime
+                self._current_regime = self._pending_regime
+                self._pending_regime = None
+                self._pending_regime_days = 0
+        else:
+            # Conditions match current regime - reset pending
+            self._pending_regime = None
+            self._pending_regime_days = 0
 
-        # Recovery (coming out of deeper drawdown with improving conditions)
-        # Classify as RECOVERY when drawdown is between -5% and -3% with low VIX
-        if current_drawdown >= -0.05 and vix_level < 20 and spread_momentum > 0:
+        return self._current_regime
+
+    def detect_regime_europe_first(
+        self,
+        vix_level: float,
+        v2x_level: Optional[float],
+        eurusd_trend: Optional[float],
+        current_drawdown: float
+    ) -> Tuple[RiskRegime, float, Dict[str, Any]]:
+        """
+        Europe-first regime detection using V2X + VIX + EURUSD trend + drawdown.
+
+        ROADMAP Phase B: Multi-factor regime model optimized for
+        "insurance for Europeans" strategy positioning.
+
+        Args:
+            vix_level: Current VIX level
+            v2x_level: Current V2X (VSTOXX) level, or None if unavailable
+            eurusd_trend: EURUSD trend (negative = EUR weakening), or None
+            current_drawdown: Current portfolio drawdown (negative)
+
+        Returns:
+            Tuple of (regime, stress_score, inputs_dict)
+        """
+        inputs = {
+            'vix': vix_level,
+            'v2x': v2x_level,
+            'eurusd_trend': eurusd_trend,
+            'drawdown': current_drawdown,
+            'v2x_available': v2x_level is not None,
+            'eurusd_trend_available': eurusd_trend is not None,
+        }
+
+        # Cache values for metrics
+        self._last_v2x = v2x_level
+        self._last_eurusd_trend = eurusd_trend
+
+        # Handle missing V2X: fallback to VIX-based estimate
+        if v2x_level is None:
+            v2x_level = vix_level * 1.2  # Historical V2X/VIX ratio ~1.2
+            self._regime_inputs_missing = True
+        else:
+            self._regime_inputs_missing = False
+
+        # Handle missing EURUSD trend
+        if eurusd_trend is None:
+            eurusd_trend = 0.0
+            self._regime_inputs_missing = True
+
+        # Compute stress score components (each normalized to 0-1)
+        # V2X component: elevated when V2X > 20, max score at V2X = 40
+        v2x_score = max(0, min(1, (v2x_level - 20) / 20))
+
+        # VIX component: elevated when VIX > 20, max score at VIX = 45
+        vix_score = max(0, min(1, (vix_level - 20) / 25))
+
+        # EURUSD trend component: negative trend (EUR weakening) is stress
+        # Normalize: -10% annual trend = max score
+        eurusd_score = max(0, min(1, -eurusd_trend / 0.10))
+
+        # Drawdown component: normalized to max_drawdown threshold
+        drawdown_score = max(0, min(1, -current_drawdown / self.max_drawdown_pct))
+
+        # Weighted stress score
+        stress_score = (
+            self.v2x_weight * v2x_score +
+            self.vix_weight * vix_score +
+            self.eurusd_trend_weight * eurusd_score +
+            self.drawdown_weight * drawdown_score
+        )
+
+        inputs['stress_score'] = stress_score
+        inputs['v2x_score'] = v2x_score
+        inputs['vix_score'] = vix_score
+        inputs['eurusd_score'] = eurusd_score
+        inputs['drawdown_score'] = drawdown_score
+
+        # Determine raw regime from stress score
+        if stress_score >= self.stress_score_crisis_threshold:
+            raw_regime = RiskRegime.CRISIS
+        elif stress_score >= self.stress_score_elevated_threshold:
+            raw_regime = RiskRegime.ELEVATED
+        else:
+            raw_regime = RiskRegime.NORMAL
+
+        # Apply hysteresis (same as original detect_regime)
+        if raw_regime != self._current_regime:
+            if raw_regime == self._pending_regime:
+                self._pending_regime_days += 1
+            else:
+                self._pending_regime = raw_regime
+                self._pending_regime_days = 1
+
+            # CRISIS is immediate, others need persistence
+            if raw_regime == RiskRegime.CRISIS:
+                self._current_regime = RiskRegime.CRISIS
+                self._pending_regime = None
+                self._pending_regime_days = 0
+            elif self._pending_regime_days >= self.regime_persistence_days:
+                self._current_regime = self._pending_regime
+                self._pending_regime = None
+                self._pending_regime_days = 0
+        else:
+            self._pending_regime = None
+            self._pending_regime_days = 0
+
+        inputs['regime'] = self._current_regime.value
+        inputs['pending_regime'] = self._pending_regime.value if self._pending_regime else None
+        inputs['pending_days'] = self._pending_regime_days
+
+        return self._current_regime, stress_score, inputs
+
+    def compute_eurusd_trend(self, eurusd_series: pd.Series) -> float:
+        """
+        Compute EURUSD trend (slope) over lookback period.
+
+        Args:
+            eurusd_series: Series of EURUSD prices
+
+        Returns:
+            Annualized trend (negative = EUR weakening)
+        """
+        if eurusd_series is None or len(eurusd_series) < self.eurusd_trend_lookback:
+            return 0.0
+
+        # Use returns over lookback period
+        lookback = min(len(eurusd_series), self.eurusd_trend_lookback)
+        returns = eurusd_series.pct_change().tail(lookback)
+
+        # Annualize the mean return
+        return returns.mean() * 252
+
+    def get_regime_inputs(self) -> Dict[str, Any]:
+        """Get cached regime inputs for metrics."""
+        return {
+            'v2x': self._last_v2x,
+            'eurusd_trend': self._last_eurusd_trend,
+            'inputs_missing': self._regime_inputs_missing,
+            'current_regime': self._current_regime.value,
+            'pending_regime': self._pending_regime.value if self._pending_regime else None,
+            'pending_days': self._pending_regime_days,
+        }
+
+    def _detect_raw_regime(
+        self,
+        vix_level: float,
+        spread_momentum: float,
+        current_drawdown: float
+    ) -> RiskRegime:
+        """
+        Detect raw regime without hysteresis (internal helper).
+        Uses separate enter/exit thresholds for stability.
+        """
+        current = self._current_regime
+
+        # CRISIS: Immediate entry, delayed exit
+        if current != RiskRegime.CRISIS:
+            # Enter crisis if above enter threshold
+            if vix_level >= self.vix_enter_crisis or current_drawdown <= -self.max_drawdown_pct:
+                return RiskRegime.CRISIS
+        else:
+            # In crisis - only exit if below exit threshold
+            if vix_level < self.vix_exit_crisis and current_drawdown > -self.max_drawdown_pct * 0.5:
+                pass  # Will check for elevated below
+            else:
+                return RiskRegime.CRISIS
+
+        # ELEVATED: Separate enter/exit thresholds
+        if current != RiskRegime.ELEVATED:
+            # Enter elevated if above enter threshold
+            if vix_level >= self.vix_enter_elevated or current_drawdown <= -0.05:
+                return RiskRegime.ELEVATED
+        else:
+            # In elevated - only exit if below exit threshold
+            if vix_level >= self.vix_exit_elevated or current_drawdown <= -0.03:
+                return RiskRegime.ELEVATED
+
+        # RECOVERY: Coming out of drawdown
+        if current_drawdown >= -0.05 and current_drawdown <= -0.02 and vix_level < 20 and spread_momentum > 0:
             return RiskRegime.RECOVERY
 
+        # NORMAL: Default
         return RiskRegime.NORMAL
+
+    def get_risk_state_scaling(self) -> float:
+        """
+        Get scaling factor from risk state machine.
+
+        Phase 8: Returns fixed scaling based on current risk state.
+        This replaces multiplicative stacking.
+
+        Returns:
+            Scaling factor (1.0 for NORMAL, 0.7 for ELEVATED, 0.3 for CRISIS)
+        """
+        return self._risk_state.value
+
+    def update_risk_state(self, regime: RiskRegime, current_drawdown: float) -> RiskState:
+        """
+        Update risk state machine based on regime and drawdown.
+
+        Phase 8: State machine replaces multiplicative reduction.
+
+        Args:
+            regime: Current risk regime
+            current_drawdown: Current portfolio drawdown
+
+        Returns:
+            New RiskState
+        """
+        # Drawdown floor (overrides regime)
+        if current_drawdown <= -self.max_drawdown_pct:
+            self._risk_state = RiskState.CRISIS
+            return self._risk_state
+
+        # Map regime to risk state
+        if regime == RiskRegime.CRISIS:
+            self._risk_state = RiskState.CRISIS
+        elif regime == RiskRegime.ELEVATED:
+            self._risk_state = RiskState.ELEVATED
+        else:
+            self._risk_state = RiskState.NORMAL
+
+        return self._risk_state
 
     def compute_spread_momentum(self, ratio_series: pd.Series) -> float:
         """
@@ -386,6 +767,11 @@ class RiskEngine:
         """
         Comprehensive risk evaluation for the portfolio.
 
+        ENGINE_FIX_PLAN Updates:
+        - Phase 6: Uses blended EWMA/rolling vol with floor
+        - Phase 7: Regime detection with hysteresis
+        - Phase 8: Risk state machine for scaling (not multiplicative)
+
         Args:
             portfolio_state: Current portfolio state
             returns_series: Historical returns
@@ -397,12 +783,8 @@ class RiskEngine:
         """
         warnings = []
 
-        # Compute volatility
-        vol_20d = self.compute_realized_vol_annual(returns_series, 20)
-        vol_60d = self.compute_realized_vol_annual(returns_series, 60)
-
-        # Use longer-term vol if short-term is abnormally high
-        realized_vol = vol_20d if vol_20d < vol_60d * 1.5 else vol_60d
+        # Phase 6: Compute blended volatility (EWMA + rolling)
+        realized_vol = self.compute_blended_vol(returns_series)
 
         # Compute drawdown
         if not portfolio_state.nav_history.empty:
@@ -418,25 +800,34 @@ class RiskEngine:
         if ratio_series is not None and len(ratio_series) > 0:
             spread_momentum = self.compute_spread_momentum(ratio_series)
 
-        # Detect regime
+        # Phase 7: Detect regime with hysteresis
         regime = self.detect_regime(vix_level, spread_momentum, current_dd)
 
-        # Base scaling factor
-        scaling_factor = self.compute_scaling_factor(realized_vol)
+        # Phase 8: Update risk state machine
+        risk_state = self.update_risk_state(regime, current_dd)
 
-        # Emergency de-risk check
+        # Phase 6: Compute base scaling from volatility targeting
+        vol_scaling = self.compute_scaling_factor(realized_vol)
+
+        # Phase 8: Get state machine scaling (replaces multiplicative)
+        state_scaling = self.get_risk_state_scaling()
+
+        # Final scaling is min of vol-targeting and state machine
+        # This ensures we respect BOTH volatility constraints AND regime constraints
+        scaling_factor = min(vol_scaling, state_scaling)
+
+        # Emergency de-risk check (Phase 8: sets floor, not multiplier)
         emergency_derisk = current_dd <= -self.max_drawdown_pct
         if emergency_derisk:
             warnings.append(f"EMERGENCY: Drawdown {current_dd:.2%} exceeds max {self.max_drawdown_pct:.2%}")
-            scaling_factor = 0.25  # Reduce to 25% of target
+            # State machine already set to CRISIS, so scaling_factor is 0.3
 
-        # Regime-based reduction
-        should_reduce, reduce_factor = self.should_reduce_exposure(spread_momentum, regime)
+        # Spread momentum scaling for Core RV (Phase 7)
+        should_reduce = spread_momentum <= 0
+        reduce_factor = max(0.0, spread_momentum) if should_reduce else 1.0
 
-        # Apply regime reduction
-        if should_reduce and not emergency_derisk:
-            scaling_factor *= reduce_factor
-            warnings.append(f"Regime reduction applied: factor={reduce_factor:.2f}")
+        if should_reduce:
+            warnings.append(f"Spread momentum <= 0: Core RV scaler = {reduce_factor:.2f}")
 
         # Check leverage limits
         current_gross = portfolio_state.gross_exposure / portfolio_state.nav if portfolio_state.nav > 0 else 0
