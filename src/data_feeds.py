@@ -325,6 +325,19 @@ class DataFeed:
             except Exception:
                 pass
 
+        # Fallback: Default prices for option hedge placeholders
+        # These are used when market data is unavailable (missing subscriptions)
+        # Values are reasonable estimates for sizing calculations only
+        if price is None:
+            option_hedge_defaults = {
+                "vstoxx_call": 18.0,    # VSTOXX typical level ~18
+                "sx5e_put": 4800.0,     # Euro STOXX 50 ~4800
+                "vix_call": 15.0,       # VIX typical level ~15
+                "eu_bank_put": 100.0,   # SX7E bank index ~100
+            }
+            if instrument_id in option_hedge_defaults:
+                price = option_hedge_defaults[instrument_id]
+
         # Cache the result
         if price is not None:
             self._price_cache[instrument_id] = (price, datetime.now())
