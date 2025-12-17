@@ -861,12 +861,17 @@ class DailyScheduler:
             return True  # Don't block trading if we can't check
 
         try:
-            # Get broker NAV
-            broker_nav = self.ib_client.get_account_nav()
+            # Get broker NAV in account base currency (EUR)
+            # IB returns NetLiquidation in account base currency
+            broker_nav_base = self.ib_client.get_account_nav()
 
-            if broker_nav is None or broker_nav <= 0:
+            if broker_nav_base is None or broker_nav_base <= 0:
                 self.logger.logger.warning("reconciliation_skipped", reason="Invalid broker NAV")
                 return True
+
+            # Convert broker NAV to USD (our BASE_CCY for portfolio)
+            # Account base currency is EUR, portfolio is in USD
+            broker_nav = self.fx_rates.to_base(broker_nav_base, "EUR")
 
             # Perform reconciliation
             status = self.portfolio.reconcile_with_broker(broker_nav)
