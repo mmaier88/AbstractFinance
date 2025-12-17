@@ -312,6 +312,10 @@ class MarketCalendar:
 # Singleton calendar instance
 _calendar_instance: Optional[MarketCalendar] = None
 
+# Global flag to force execution regardless of market hours
+# Set to True to bypass all trading time checks (use for testing/manual runs)
+FORCE_EXECUTION: bool = False
+
 
 def get_market_calendar() -> MarketCalendar:
     """Get singleton MarketCalendar instance."""
@@ -356,6 +360,10 @@ def should_avoid_trading(
     Returns:
         Tuple of (should_avoid, reason)
     """
+    # Check global force flag first
+    if FORCE_EXECUTION:
+        return False, "FORCED"
+
     calendar = get_market_calendar()
 
     phase = calendar.get_session_phase(exchange, at_time)
@@ -631,6 +639,10 @@ class VenueLiquidityManager:
         Returns:
             Tuple of (should_avoid, reason)
         """
+        # Check global force flag first
+        if FORCE_EXECUTION:
+            return False, "FORCED"
+
         config = self.venue_configs.get(venue)
         if config is None:
             return True, f"Unknown venue: {venue}"
