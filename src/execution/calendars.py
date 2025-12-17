@@ -314,7 +314,9 @@ _calendar_instance: Optional[MarketCalendar] = None
 
 # Global flag to force execution regardless of market hours
 # Set to True to bypass all trading time checks (use for testing/manual runs)
-FORCE_EXECUTION: bool = False
+# Can also be set via FORCE_EXECUTION=1 environment variable
+import os
+FORCE_EXECUTION: bool = os.environ.get("FORCE_EXECUTION", "").lower() in ("1", "true", "yes")
 
 
 def get_market_calendar() -> MarketCalendar:
