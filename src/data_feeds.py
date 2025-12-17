@@ -191,9 +191,14 @@ class DataFeed:
             return Stock(spec.symbol, spec.exchange, spec.currency)
         elif spec.sec_type == "FUT":
             # For futures, check if expiry is in the instrument_id (e.g., M6E_20251215)
+            expiry = None
             if '_' in instrument_id:
-                expiry = instrument_id.split('_')[1]  # Extract expiry from ID
-            else:
+                suffix = instrument_id.split('_')[1]
+                # Only use suffix as expiry if it looks like a date (6-8 digits)
+                if suffix.isdigit() and len(suffix) >= 6:
+                    expiry = suffix
+
+            if not expiry:
                 # Calculate front month expiry
                 from datetime import date
                 today = date.today()
@@ -207,7 +212,7 @@ class DataFeed:
                     month = today.month
                     year = today.year
                 expiry = f"{year}{month:02d}"
-            return Future(spec.symbol, exchange=spec.exchange, lastTradeDateOrContractMonth=expiry)
+            return Future(spec.symbol, exchange=spec.exchange, currency=spec.currency, lastTradeDateOrContractMonth=expiry)
         elif spec.sec_type == "CASH":
             return Forex(spec.symbol + spec.currency)
         elif spec.sec_type == "IND":

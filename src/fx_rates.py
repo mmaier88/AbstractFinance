@@ -131,24 +131,29 @@ class FXRates:
         """Refresh rates from IBKR."""
         from ib_insync import Forex
 
+        # IBKR forex pairs with proper convention
+        # Format: (from_ccy, to_ccy, ib_pair, needs_invert)
+        # needs_invert=True when IBKR pair is USD/XXX but we want XXX/USD
         pairs = [
-            ("EUR", "USD"),
-            ("GBP", "USD"),
-            ("CHF", "USD"),
-            ("JPY", "USD"),
-            ("CAD", "USD"),
-            ("AUD", "USD"),
+            ("EUR", "USD", "EURUSD", False),  # 1 EUR = X USD
+            ("GBP", "USD", "GBPUSD", False),  # 1 GBP = X USD
+            ("CHF", "USD", "USDCHF", True),   # IBKR: 1 USD = X CHF, we want 1 CHF = X USD
+            ("JPY", "USD", "USDJPY", True),   # IBKR: 1 USD = X JPY, we want 1 JPY = X USD
+            ("CAD", "USD", "USDCAD", True),   # IBKR: 1 USD = X CAD, we want 1 CAD = X USD
+            ("AUD", "USD", "AUDUSD", False),  # 1 AUD = X USD
         ]
 
-        for from_ccy, to_ccy in pairs:
+        for from_ccy, to_ccy, ib_pair, needs_invert in pairs:
             try:
-                contract = Forex(from_ccy + to_ccy)
+                contract = Forex(ib_pair)
                 ib.qualifyContracts(contract)
                 ticker = ib.reqMktData(contract, '', False, False)
                 ib.sleep(0.5)
 
                 rate = ticker.last or ticker.close
                 if rate and rate > 0:
+                    if needs_invert:
+                        rate = 1.0 / rate
                     self.rates[(from_ccy, to_ccy)] = rate
 
                 ib.cancelMktData(contract)
