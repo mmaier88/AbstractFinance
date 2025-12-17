@@ -1,0 +1,75 @@
+{
+  "audit_date": "2025-12-17",
+  "sleeves": [
+    {
+      "name": "core_index_rv",
+      "weight": 0.2,
+      "loc": 400,
+      "sharpe": 0.27742396404691494,
+      "max_dd": -0.15694853215646257,
+      "correlation": 0.5228657019221793,
+      "marginal_contribution": 0.07845328879726593,
+      "insurance_score": -0.08782869516521405
+    },
+    {
+      "name": "sector_rv",
+      "weight": 0.2,
+      "loc": 525,
+      "sharpe": 0.5091365319091767,
+      "max_dd": -0.10283493052486209,
+      "correlation": 0.3856143855043515,
+      "marginal_contribution": 0.1794459048354311,
+      "insurance_score": -0.06645079866174855
+    },
+    {
+      "name": "single_name",
+      "weight": 0.1,
+      "loc": 300,
+      "sharpe": -0.41401557207861556,
+      "max_dd": -0.8242176787324533,
+      "correlation": 0.48530068034270846,
+      "marginal_contribution": -0.3341715811124749,
+      "insurance_score": -4.635554500372289
+    },
+    {
+      "name": "credit_carry",
+      "weight": 0.15,
+      "loc": 200,
+      "sharpe": 0.1485801824039623,
+      "max_dd": -0.11808834507124323,
+      "correlation": 0.24016410261550503,
+      "marginal_contribution": 0.023066505584450336,
+      "insurance_score": -0.5463085901947985
+    },
+    {
+      "name": "europe_vol_convex",
+      "weight": 0.15,
+      "loc": 596,
+      "sharpe": 0.699528050590289,
+      "max_dd": -0.34650046534095996,
+      "correlation": 0.4406672154002374,
+      "marginal_contribution": 0.36776818072580103,
+      "insurance_score": 4.244512293769793
+    },
+    {
+      "name": "crisis_alpha",
+      "weight": 0.1,
+      "loc": 400,
+      "sharpe": -0.9009043028488174,
+      "max_dd": -0.09485511109956866,
+      "correlation": 0.06366255342212512,
+      "marginal_contribution": -0.08220454621788209,
+      "insurance_score": 0.37256862231059285
+    },
+    {
+      "name": "cash_buffer",
+      "weight": 0.1,
+      "loc": 0,
+      "sharpe": 4.136318278760605e+16,
+      "max_dd": 0.0,
+      "correlation": 1.8570456438766668e-17,
+      "marginal_contribution": 0.0,
+      "insurance_score": 6.938893903907228e-18
+    }
+  ]
+}
