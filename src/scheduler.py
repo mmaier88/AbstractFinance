@@ -769,26 +769,35 @@ class DailyScheduler:
     def _sync_cash_from_ib(self) -> None:
         """Sync cash balances from IB account values.
 
-        IB reports cash balances by currency. We need to get these and update
-        portfolio.cash_by_ccy for accurate NAV calculation.
+        IMPORTANT: For margin accounts, we use TotalCashValue (net cash in account
+        base currency) rather than CashBalance per currency. The per-currency
+        CashBalance values don't properly account for margin borrowing.
+
+        For example, if you buy USD stocks with EUR margin:
+        - CashBalance (EUR): +452k (your collateral)
+        - CashBalance (USD): -707k (your margin loan)
+        - TotalCashValue: -149k (the true net cash after FX conversion)
         """
         if not self.ib_client or not self.ib_client.is_connected():
             return
 
         try:
             account_values = self.ib_client.ib.accountValues()
-            cash_by_ccy = {}
+            total_cash_base = None
 
             for av in account_values:
-                # CashBalance gives actual cash in each currency
-                if av.tag == "CashBalance" and av.currency != "BASE":
-                    cash_by_ccy[av.currency] = float(av.value)
+                # TotalCashValue in BASE or account base currency (EUR)
+                # This is the proper net cash after margin accounting
+                if av.tag == "TotalCashValue" and av.currency in ["BASE", "EUR"]:
+                    total_cash_base = float(av.value)
+                    break
 
-            if cash_by_ccy:
-                self.portfolio.cash_by_ccy = cash_by_ccy
+            if total_cash_base is not None:
+                # Store in EUR (account base currency)
+                self.portfolio.cash_by_ccy = {"EUR": total_cash_base}
                 self.logger.logger.debug(
                     "cash_synced_from_ib",
-                    cash_by_ccy=cash_by_ccy
+                    total_cash_eur=total_cash_base
                 )
         except Exception as e:
             self.logger.logger.warning(
