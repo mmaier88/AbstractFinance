@@ -116,15 +116,17 @@ class EUSovereignSpreadsEngine:
     """
     EU Sovereign Spreads Engine.
 
-    Strategy: Long Bund, Short BTP/OAT during EU fragmentation stress.
+    Strategy: Mean-reversion on BTP/OAT spreads when V2X is declining.
+    Long Bund, Short BTP/OAT when spreads are elevated but crisis is resolving.
     DV01-matched to ensure no hidden duration bet.
 
-    Hypothesis: Pays off during EU fragmentation (2011-2012 type).
+    Hypothesis: Pays off during EU crisis RESOLUTION (spreads narrow after peaks).
     """
 
     def __init__(self, config: Optional[EUSovereignSpreadConfig] = None):
         self.config = config or EUSovereignSpreadConfig()
-        self._last_spreads: Dict[str, float] = {}
+        self._v2x_history: List[float] = []
+        self._spread_history: List[float] = []
 
     def compute_eu_stress_level(
         self,
@@ -165,33 +167,59 @@ class EUSovereignSpreadsEngine:
         btp_spread_bps: float,
         oat_spread_bps: float,
         nav: float,
+        v2x_5d_ago: Optional[float] = None,
+        btp_spread_5d_ago: Optional[float] = None,
     ) -> EngineSignal:
-        """Compute spread positions based on EU stress."""
+        """
+        Compute spread positions using mean-reversion with crisis resolution filter.
+
+        Key insight: Enter when spreads are elevated but V2X is DECLINING
+        (crisis resolution phase), not during crisis onset.
+        """
         stress = self.compute_eu_stress_level(v2x, btp_spread_bps, oat_spread_bps)
 
         positions = {}
         signal_strength = 0.0
         target_allocation = 0.0
 
-        if stress == EUStressLevel.CRISIS:
-            # Maximum spread position
-            signal_strength = 1.0
-            target_allocation = self.config.max_position_pct_nav
+        # Update history
+        self._v2x_history.append(v2x)
+        self._spread_history.append(btp_spread_bps)
+        if len(self._v2x_history) > 20:
+            self._v2x_history = self._v2x_history[-20:]
+            self._spread_history = self._spread_history[-20:]
 
-            # Allocate to both spreads
-            per_spread = target_allocation / 2
-            if btp_spread_bps > self.config.activation_spread_bps["FGBL_FBTP"]:
-                positions["FGBL_long_vs_FBTP"] = per_spread
+        # Check V2X trend (declining = crisis resolving)
+        v2x_declining = False
+        if len(self._v2x_history) >= 5:
+            v2x_5d = self._v2x_history[-5]
+            v2x_declining = v2x < v2x_5d * 0.95  # V2X down 5%+ over 5 days
+
+        # Check spread is elevated but starting to narrow
+        spread_elevated = btp_spread_bps > self.config.activation_spread_bps["FGBL_FBTP"]
+        spread_narrowing = False
+        if len(self._spread_history) >= 5:
+            spread_5d = self._spread_history[-5]
+            spread_narrowing = btp_spread_bps < spread_5d  # Spread narrowing
+
+        # Entry condition: Elevated spreads + V2X declining (crisis resolution)
+        if spread_elevated and v2x_declining:
+            # Scale position by how elevated the spread is
+            spread_z = (btp_spread_bps - 150) / 100  # Z-score above activation
+            signal_strength = min(1.0, max(0.3, spread_z))
+            target_allocation = signal_strength * self.config.max_position_pct_nav
+
+            positions["FGBL_long_vs_FBTP"] = target_allocation * 0.7
+
+            # Add OAT if also elevated
             if oat_spread_bps > self.config.activation_spread_bps["FGBL_FOAT"]:
-                positions["FGBL_long_vs_FOAT"] = per_spread
+                positions["FGBL_long_vs_FOAT"] = target_allocation * 0.3
 
-        elif stress == EUStressLevel.ELEVATED:
-            # Half position
+        # Alternative: Very high spreads even without V2X signal (deep value)
+        elif btp_spread_bps > 350:  # Extreme spread = always enter
             signal_strength = 0.5
-            target_allocation = self.config.max_position_pct_nav / 2
-
-            if btp_spread_bps > self.config.activation_spread_bps["FGBL_FBTP"]:
-                positions["FGBL_long_vs_FBTP"] = target_allocation
+            target_allocation = self.config.max_position_pct_nav * 0.5
+            positions["FGBL_long_vs_FBTP"] = target_allocation
 
         return EngineSignal(
             engine_name="eu_sovereign_spreads",
@@ -201,8 +229,10 @@ class EUSovereignSpreadsEngine:
             metadata={
                 "stress_level": stress.value,
                 "v2x": v2x,
+                "v2x_declining": v2x_declining,
                 "btp_spread_bps": btp_spread_bps,
-                "oat_spread_bps": oat_spread_bps,
+                "spread_elevated": spread_elevated,
+                "spread_narrowing": spread_narrowing,
             }
         )
 

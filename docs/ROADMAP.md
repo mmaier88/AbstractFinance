@@ -689,29 +689,31 @@ Three **candidate** additions (implement ONLY if backtests prove value):
 
 ---
 
-### Phase O: Conditional Implementation (Priority: CONDITIONAL)
+### Phase O: Conditional Implementation (Priority: CONDITIONAL) ⏸️ NO ENGINES APPROVED
 
 **Goal:** Implement only engines that passed Phase N gates.
 
-**Prerequisites:** Phase N complete with documented results.
+**Prerequisites:** Phase N complete with documented results. ✅
 
-**For Each Approved Engine:**
-1. Create engine file (`src/eu_sovereign_spreads.py`, etc.)
-2. Integrate with strategy_logic.py
-3. Add to instruments.yaml
-4. Unit tests (minimum 5 per engine)
-5. Paper trade 2 weeks before live
+**Backtest Results (2008-2024):**
 
-**Conservative Rollout (per engine):**
-- Week 1: Compute-only (log targets, no orders)
-- Week 2: 10-20% sizing
-- Week 3+: Full sizing if stable
+| Engine | Sharpe | Insurance | OOS Sharpe | Portfolio Δ | RESULT |
+|--------|--------|-----------|------------|-------------|--------|
+| EU Sovereign Spreads | -8.24 | -0.00 | -10.84 | -0.02 | ❌ REJECTED |
+| Energy Shock Hedge | -0.10 | +0.15 ✓ | +0.10 ✓ | -0.00 | ❌ REJECTED |
+| Conditional Duration | -11.22 | -0.00 | 0.00 | -0.02 | ❌ REJECTED |
 
-**Acceptance Criteria:**
-- [ ] Each implemented engine has full test coverage
-- [ ] 2 weeks paper trading without anomalies
-- [ ] Positions match backtest expectations (±20%)
-- [ ] No material drawdown vs backtest
+**Analysis:**
+- **EU Sovereign Spreads**: Mean-reversion signal timing doesn't capture spread normalization profitably. The strategy enters during crisis resolution but spread narrowing is too gradual for the position sizing.
+- **Energy Shock Hedge**: Passes insurance and OOS gates, but standalone Sharpe too low and no portfolio improvement. Most promising for future iteration.
+- **Conditional Duration**: Deflationary recession conditions too rare in sample period. When triggered, returns are negligible. 2022 inflation guard works correctly (0% activity in 2022).
+
+**Conclusion:** The v2.2 evidence-gate framework is working correctly. No engines met all implementation thresholds. Engines archived for future review with better signal logic or real data.
+
+**Future Work:**
+- [ ] Iterate EU Sovereign Spreads with faster mean-reversion or momentum-based signal
+- [ ] Energy Shock may be viable with different trend parameters
+- [ ] Re-test with actual historical data (vs simulated) when available
 
 ---
 

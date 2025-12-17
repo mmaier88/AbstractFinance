@@ -1,0 +1,37 @@
+{
+  "run_date": "2025-12-17",
+  "data_range": "2008-01-01 to 2024-12-31",
+  "engines": [
+    {
+      "name": "eu_sovereign_spreads",
+      "sharpe": -8.235038152392924,
+      "max_dd": -0.010626670242223968,
+      "total_return": -0.009704108607341277,
+      "insurance_score": -0.004662330490306308,
+      "oos_sharpe": -10.84108365685032,
+      "marginal_contribution": -0.02431890248973065,
+      "passes_all_gates": false
+    },
+    {
+      "name": "energy_shock",
+      "sharpe": -0.09517124220559744,
+      "max_dd": -0.01016035797960095,
+      "total_return": 0.34243355273920595,
+      "insurance_score": 0.15029782366842515,
+      "oos_sharpe": 0.09741824306557396,
+      "marginal_contribution": -0.003133656320465056,
+      "passes_all_gates": false
+    },
+    {
+      "name": "conditional_duration",
+      "sharpe": -11.2160633926041,
+      "max_dd": -0.0074857454605725265,
+      "total_return": -0.0023285364071774506,
+      "insurance_score": -0.003744076969517156,
+      "oos_sharpe": 0.0,
+      "marginal_contribution": -0.02440345901522728,
+      "passes_all_gates": false
+    }
+  ],
+  "approved_for_implementation": []
+}

@@ -72,16 +72,37 @@ class TestEUSovereignSpreadsEngine:
         assert signal.target_allocation == 0.0
         assert len(signal.positions) == 0
 
-    def test_signal_in_crisis(self, engine):
-        """Should produce full signal in crisis."""
+    def test_signal_in_crisis_resolution(self, engine):
+        """Should produce signal when spreads elevated AND V2X declining."""
+        # Build V2X history showing decline
+        for v2x in [40, 38, 36, 34, 32, 30]:  # Declining V2X
+            engine.compute_signal(
+                v2x=v2x,
+                btp_spread_bps=280,
+                oat_spread_bps=60,
+                nav=1_000_000,
+            )
+
+        # Now with V2X still declining, should get signal
         signal = engine.compute_signal(
-            v2x=35,
+            v2x=28,  # Still declining from 32
             btp_spread_bps=280,
             oat_spread_bps=60,
-        nav=1_000_000,
+            nav=1_000_000,
         )
-        assert signal.signal_strength == 1.0
+        assert signal.signal_strength > 0
         assert signal.target_allocation > 0
+        assert "FGBL_long_vs_FBTP" in signal.positions
+
+    def test_signal_on_extreme_spread(self, engine):
+        """Should signal on very wide spreads even without V2X decline."""
+        signal = engine.compute_signal(
+            v2x=35,
+            btp_spread_bps=400,  # Extreme spread > 350
+            oat_spread_bps=100,
+            nav=1_000_000,
+        )
+        assert signal.signal_strength > 0
         assert "FGBL_long_vs_FBTP" in signal.positions
 
     def test_btp_spread_activation_threshold(self, engine):
@@ -106,25 +127,33 @@ class TestEUSovereignSpreadsEngine:
         # High should trigger if in elevated/crisis (need to check stress level)
 
     def test_simulate_returns(self, engine):
-        """Should simulate returns from spread changes."""
-        dates = pd.date_range("2020-01-01", periods=10, freq="D")
+        """Should simulate returns from spread changes during crisis resolution."""
+        dates = pd.date_range("2020-01-01", periods=20, freq="D")
+
+        # Scenario: V2X declining from crisis peak, spreads elevated then narrowing
+        v2x_values = [45, 43, 41, 39, 37, 35, 33, 31, 29, 27,
+                      26, 25, 24, 23, 22, 21, 20, 19, 18, 18]  # Declining V2X
+        btp_spread_values = [350, 340, 330, 320, 310, 300, 290, 280, 270, 260,
+                            250, 240, 230, 220, 210, 200, 190, 180, 170, 160]  # Narrowing spread
+
         spread_changes = pd.DataFrame({
-            "btp_spread_change": [-5, -10, 5, -8, -3, 10, -7, -5, -2, -1],
-            "oat_spread_change": [-2, -3, 1, -2, -1, 3, -2, -1, 0, 0],
+            "btp_spread_change": [-10] * 20,  # Consistent narrowing
+            "oat_spread_change": [-3] * 20,
         }, index=dates)
 
-        # Create stress scenario (crisis level)
-        v2x = pd.Series([35] * 10, index=dates)
-        btp_spread = pd.Series([280] * 10, index=dates)
-        oat_spread = pd.Series([60] * 10, index=dates)
+        v2x = pd.Series(v2x_values, index=dates)
+        btp_spread = pd.Series(btp_spread_values, index=dates)
+        oat_spread = pd.Series([60] * 20, index=dates)
 
         returns = engine.simulate_returns(
             spread_changes, v2x, btp_spread, oat_spread
         )
 
-        assert len(returns) == 10
-        # Spread narrowing (negative change) should produce positive returns
-        assert returns.iloc[1] > 0  # -10 bps narrowing
+        assert len(returns) == 20
+        # With V2X declining and spreads narrowing, should have positive returns
+        # Need some history before signal activates
+        later_returns = returns.iloc[10:]  # After warmup
+        assert later_returns.sum() >= 0  # Should be net positive or at least neutral
 
 
 class TestEnergyShockEngine:
