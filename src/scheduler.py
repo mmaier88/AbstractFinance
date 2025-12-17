@@ -1118,8 +1118,8 @@ class DailyScheduler:
 
         # Build fallback prices from portfolio positions (IBKR already provides market prices)
         position_prices = {}
-        if hasattr(self, 'portfolio_state') and self.portfolio_state:
-            for pos in self.portfolio_state.positions:
+        if hasattr(self, 'portfolio') and self.portfolio:
+            for pos in self.portfolio.positions:
                 if pos.market_price and pos.market_price > 0:
                     position_prices[pos.instrument_id] = pos.market_price
 
