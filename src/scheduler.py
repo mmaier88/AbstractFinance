@@ -1115,9 +1115,20 @@ class DailyScheduler:
         # Step 2: Convert OrderSpec to OrderIntent
         intents = []
         prices = {}
+
+        # Build fallback prices from portfolio positions (IBKR already provides market prices)
+        position_prices = {}
+        if hasattr(self, 'portfolio_state') and self.portfolio_state:
+            for pos in self.portfolio_state.positions:
+                if pos.market_price and pos.market_price > 0:
+                    position_prices[pos.instrument_id] = pos.market_price
+
         for order in orders:
             # Get current price for netting calculations
             price = self.data_feed.get_last_price(order.instrument_id)
+            if not price:
+                # Fallback to portfolio position price
+                price = position_prices.get(order.instrument_id)
             if price:
                 prices[order.instrument_id] = price
 
