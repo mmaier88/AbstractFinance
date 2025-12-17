@@ -18,7 +18,7 @@ from enum import Enum
 
 try:
     from ib_insync import (
-        IB, Contract, Stock, Future, Forex, Option,
+        IB, Contract, Stock, Future, Forex, Option, Index,
         MarketOrder, LimitOrder, StopOrder, Order,
         Trade, Fill, Position as IBPosition
     )
@@ -498,7 +498,12 @@ class IBClient:
                 month = today.month
                 year = today.year
             expiry = f"{year}{month:02d}"
-            contract = Future(symbol, exchange=exchange, lastTradeDateOrContractMonth=expiry)
+            # Include currency to avoid ambiguity (e.g. M6E requires currency)
+            contract = Future(symbol, exchange=exchange, currency=currency, lastTradeDateOrContractMonth=expiry)
+
+        elif sec_type == 'IND':
+            # Index contracts (for volatility indices like VIX, V2X, SX7E)
+            contract = Index(symbol, exchange, currency)
 
         elif sec_type == 'CASH':
             # Forex
