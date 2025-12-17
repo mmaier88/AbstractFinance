@@ -752,6 +752,10 @@ class DailyScheduler:
         # Sync cash balances from IB (critical for accurate NAV)
         self._sync_cash_from_ib()
 
+        # Compute NAV before reconciliation (positions and cash are synced)
+        # This ensures portfolio.nav is accurate for broker reconciliation
+        self.portfolio.compute_nav(self.data_feed, fx_rates=self.fx_rates)
+
         # ENGINE_FIX_PLAN Phase 2: Pass FX rates for exposure calculation
         self.portfolio.compute_exposures(fx_rates=self.fx_rates)
         self.portfolio.compute_sleeve_exposures()
