@@ -749,6 +749,9 @@ class DailyScheduler:
         for inst_id, position in ib_positions.items():
             self.portfolio.positions[inst_id] = position
 
+        # Sync cash balances from IB (critical for accurate NAV)
+        self._sync_cash_from_ib()
+
         # ENGINE_FIX_PLAN Phase 2: Pass FX rates for exposure calculation
         self.portfolio.compute_exposures(fx_rates=self.fx_rates)
         self.portfolio.compute_sleeve_exposures()
@@ -762,6 +765,36 @@ class DailyScheduler:
             sleeve_weights=self.portfolio.get_sleeve_weights(),
             hedge_budget_used=self.portfolio.hedge_budget_used_ytd
         )
+
+    def _sync_cash_from_ib(self) -> None:
+        """Sync cash balances from IB account values.
+
+        IB reports cash balances by currency. We need to get these and update
+        portfolio.cash_by_ccy for accurate NAV calculation.
+        """
+        if not self.ib_client or not self.ib_client.is_connected():
+            return
+
+        try:
+            account_values = self.ib_client.ib.accountValues()
+            cash_by_ccy = {}
+
+            for av in account_values:
+                # CashBalance gives actual cash in each currency
+                if av.tag == "CashBalance" and av.currency != "BASE":
+                    cash_by_ccy[av.currency] = float(av.value)
+
+            if cash_by_ccy:
+                self.portfolio.cash_by_ccy = cash_by_ccy
+                self.logger.logger.debug(
+                    "cash_synced_from_ib",
+                    cash_by_ccy=cash_by_ccy
+                )
+        except Exception as e:
+            self.logger.logger.warning(
+                "cash_sync_failed",
+                error=str(e)
+            )
 
     def _refresh_fx_rates(self) -> None:
         """
