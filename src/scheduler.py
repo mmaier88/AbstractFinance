@@ -370,7 +370,7 @@ class DailyScheduler:
                             "order_complete",
                             extra={
                                 "instrument_id": result.ticket.intent.instrument_id,
-                                "status": result.status.value,
+                                "status": result.ticket.status.value,
                                 "filled_qty": result.fill_qty,
                                 "slippage_bps": result.slippage_bps,
                                 "commission": result.commission,
