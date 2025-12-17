@@ -528,6 +528,212 @@ The following phases integrate the new strategy modules (`europe_vol.py`, `secto
 
 ---
 
+---
+
+## Strategy Evolution v2.2: Europe-First Insurance Expansion
+
+> **Philosophy:** Infrastructure first, evidence-based implementation. No new complexity without proven material improvement.
+
+### Scope
+
+Three **candidate** additions (implement ONLY if backtests prove value):
+1. **EU Sovereign Stress Spreads**: Bund–BTP and Bund–OAT (EUREX futures)
+2. **Energy Shock Hedge**: Oil/energy as Europe-specific shock hedge
+3. **Conditional Gov Bond Duration**: Long duration only in deflationary recession (avoid 2022 trap)
+
+### Design Principles (Non-Negotiable)
+
+- **Brand stays "Insurance for Europeans"**: every sleeve must map to EU stress archetype
+- **Futures only if bounded**: DV01-matched spreads, hard caps (per-sleeve, per-bet, daily loss)
+- **No overfit**: simple signals first; walk-forward + ablations must confirm robustness
+- **Evidence gate**: NO implementation without backtest proving material improvement
+
+---
+
+### Phase L: Institutional-Grade Backtest Harness (Priority: CRITICAL)
+
+**Goal:** Build rigorous testing infrastructure before adding any new sleeves.
+
+**Why:** Current backtest lacks stress-realistic fills, roll costs, and walk-forward validation. Cannot trust new sleeve decisions without this.
+
+**Deliverables:**
+1. **Transaction Cost Model with Stress Widening**
+   - Normal spreads by asset class
+   - 2-5x spread multiplier during stress (VIX > 30)
+   - Futures roll cost realism (basis, slippage)
+
+2. **Futures Roll Simulation**
+   - Realistic roll calendar
+   - Basis cost modeling
+   - Gap risk at expiry
+
+3. **Option Surface Pricing**
+   - Vol surface interpolation
+   - Realistic fills (mid + half spread)
+   - Exercise/assignment modeling
+
+4. **Walk-Forward + Ablation Suite**
+   - Rolling 3-year train / 1-year test
+   - Parameter stability analysis
+   - Ablation: "Would portfolio be worse without this sleeve?"
+   - Out-of-sample Sharpe, max DD, insurance score
+
+**Acceptance Criteria:**
+- [ ] Backtest stress periods (2008, 2011, 2020, 2022) show realistic fill degradation
+- [ ] Futures roll costs match empirical data (±20%)
+- [ ] Walk-forward produces stable parameters (no overfitting)
+- [ ] Ablation framework identifies redundant sleeves
+
+**Estimated Effort:** 5-7 days
+
+---
+
+### Phase M: Risk Discipline Framework (Priority: HIGH)
+
+**Goal:** Implement hard constraints before any new sleeve can be activated.
+
+**Why:** New sleeves (especially futures-based) can introduce hidden risks. Need bounds first.
+
+**Deliverables:**
+1. **DV01 Matching for Spreads**
+   - Automatic DV01 calculation for bond futures
+   - Spread ratio = DV01(leg1) / DV01(leg2)
+   - Reject trades if mismatch > 5%
+
+2. **Hard Caps System**
+   - Per-sleeve notional cap (% of NAV)
+   - Per-bet size cap
+   - Daily loss cap (auto-flatten if breached)
+   - Gross leverage cap
+
+3. **Correlation Budget**
+   - Track inter-sleeve correlation during stress
+   - Alert if combined position > threshold
+   - Prevent simultaneous max allocation to correlated sleeves
+
+4. **Kill Switches**
+   - Per-engine disable flag
+   - Global halt trigger
+   - Telemetry-based auto-disable (e.g., 3 consecutive losing days)
+
+**Acceptance Criteria:**
+- [ ] DV01 mismatch > 5% blocks trade
+- [ ] Daily loss > X% flattens sleeve
+- [ ] Correlation alert fires when appropriate
+- [ ] Kill switches tested and functional
+
+**Estimated Effort:** 3-4 days
+
+---
+
+### Phase N: Candidate Engine Testing (Priority: HIGH)
+
+**Goal:** Backtest all three candidate engines. Implement ONLY those with material improvement.
+
+**Why:** Complexity has costs (maintenance, bugs, correlation). Must prove value before adding.
+
+**Candidate Engines:**
+
+#### N.1: EU Sovereign Spreads Engine
+- **Instruments:** FGBL (Bund), FBTP (BTP), FOAT (OAT) on EUREX
+- **Logic:** DV01-matched Bund vs BTP/OAT, activated during EU stress
+- **Hypothesis:** Pays off during EU fragmentation (2011-2012 type)
+- **Test:** Backtest 2010-2024, focus on EU crisis periods
+
+#### N.2: Energy Shock Hedge Engine
+- **Instruments:** CL (WTI) or BZ (Brent) futures
+- **Logic:** Trend/breakout + EU stress gated
+- **Hypothesis:** Pays off during 2022-type energy shocks
+- **Test:** Backtest 2015-2024, focus on 2022
+
+#### N.3: Conditional Duration Engine
+- **Instruments:** FGBL (Bund) only
+- **Logic:** Long duration ONLY in deflationary recession regime
+- **Guard:** Explicit inflation-shock filter (CPI > X → no duration)
+- **Hypothesis:** Captures flight-to-quality without 2022 trap
+- **Test:** Backtest 2008-2024, verify 2022 NOT triggered
+
+**Testing Protocol:**
+1. Run each engine in isolation
+2. Measure: Sharpe, max DD, insurance score, correlation to existing portfolio
+3. Run ablation: "Does adding this improve portfolio?"
+4. Walk-forward validation (3yr train / 1yr test rolling)
+
+**Implementation Gate:**
+| Metric | Threshold for Implementation |
+|--------|------------------------------|
+| Standalone Sharpe | > 0.3 net of costs |
+| Portfolio Sharpe Improvement | > 0.1 |
+| Max DD Improvement | > 5% reduction OR no worse |
+| Insurance Score | Positive (pays in stress) |
+| Walk-Forward Stability | Parameters stable across windows |
+| Ablation | Portfolio worse without it |
+
+**Acceptance Criteria:**
+- [ ] All three engines backtested with institutional harness
+- [ ] Results documented with pass/fail on each metric
+- [ ] ONLY engines passing ALL thresholds proceed to implementation
+- [ ] Failed engines documented and archived (not deleted)
+
+**Estimated Effort:** 5-7 days (testing), 3-5 days per engine (if approved)
+
+---
+
+### Phase O: Conditional Implementation (Priority: CONDITIONAL)
+
+**Goal:** Implement only engines that passed Phase N gates.
+
+**Prerequisites:** Phase N complete with documented results.
+
+**For Each Approved Engine:**
+1. Create engine file (`src/eu_sovereign_spreads.py`, etc.)
+2. Integrate with strategy_logic.py
+3. Add to instruments.yaml
+4. Unit tests (minimum 5 per engine)
+5. Paper trade 2 weeks before live
+
+**Conservative Rollout (per engine):**
+- Week 1: Compute-only (log targets, no orders)
+- Week 2: 10-20% sizing
+- Week 3+: Full sizing if stable
+
+**Acceptance Criteria:**
+- [ ] Each implemented engine has full test coverage
+- [ ] 2 weeks paper trading without anomalies
+- [ ] Positions match backtest expectations (±20%)
+- [ ] No material drawdown vs backtest
+
+---
+
+### v2.2 Execution Order
+
+| Order | Phase | Priority | Dependency |
+|-------|-------|----------|------------|
+| 1 | **L: Backtest Harness** | CRITICAL | None |
+| 2 | **M: Risk Discipline** | HIGH | L (needs harness to validate) |
+| 3 | **N: Candidate Testing** | HIGH | L, M (needs harness + caps) |
+| 4 | **O: Implementation** | CONDITIONAL | N (only if tests pass) |
+
+**Timeline:**
+- Week 1-2: Phase L (backtest harness)
+- Week 3: Phase M (risk discipline)
+- Week 4-5: Phase N (testing candidates)
+- Week 6+: Phase O (implement winners only)
+
+---
+
+### v2.2 Instruments (IBKR-Accessible)
+
+| Category | Symbol | Exchange | Notes |
+|----------|--------|----------|-------|
+| EU Sovereign | FGBL | EUREX | Euro-Bund |
+| EU Sovereign | FBTP | EUREX | BTP (Italy) |
+| EU Sovereign | FOAT | EUREX | OAT (France) |
+| Energy | CL | NYMEX | WTI Crude |
+| Energy | BZ | NYMEX | Brent Crude |
+
+---
+
 ## Appendix: Deferred Items
 
 These items may be valuable but are deferred to avoid scope creep:
@@ -540,4 +746,4 @@ These items may be valuable but are deferred to avoid scope creep:
 ---
 
 *Document created: 2025-12-16*
-*Last updated: 2025-12-16*
+*Last updated: 2025-12-17*
