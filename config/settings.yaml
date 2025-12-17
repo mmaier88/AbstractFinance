@@ -106,15 +106,16 @@ execution:
   max_data_age_seconds: 30                # Reject orders if data older than this
 
 # Sleeve Allocations (risk weights)
-# STRATEGY EVOLUTION: Reduced equity L/S, increased Europe vol convexity
+# PORTFOLIO SIMPLIFICATION v2.2: Removed negative contributors
+# - REMOVED single_name: -0.334 marginal Sharpe, -82% max DD
+# - REMOVED crisis_alpha: Merged into europe_vol_convex (overlapping instruments)
+# - REDUCED credit_carry: Low contribution (+0.023), negative insurance
 sleeves:
-  core_index_rv: 0.20            # Core US vs EU index spread (reduced from 0.35)
+  core_index_rv: 0.20            # Core US vs EU index spread
   sector_rv: 0.20                # Sector relative value (factor-neutral)
-  single_name: 0.10              # Single stock L/S (trend-gated)
-  credit_carry: 0.15             # Credit & carry (regime-adaptive)
-  europe_vol_convex: 0.15        # NEW: VSTOXX calls + SX5E put spreads
-  crisis_alpha: 0.10             # Crisis alpha / sovereign stress (increased)
-  cash_buffer: 0.10              # Cash/margin buffer (increased for safety)
+  europe_vol_convex: 0.18        # VSTOXX calls + SX5E put spreads (primary insurance)
+  credit_carry: 0.08             # Credit & carry (NORMAL regime only)
+  money_market: 0.34             # Short-term money funds (not idle cash)
 
 # =============================================================================
 # STRATEGY EVOLUTION: Trend Filter for Core RV

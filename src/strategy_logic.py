@@ -20,7 +20,6 @@ from enum import Enum
 from .portfolio import PortfolioState, Sleeve, Position, InstrumentType
 from .risk_engine import RiskEngine, RiskDecision, RiskRegime
 from .data_feeds import DataFeed
-from .stock_screener import run_screening, get_default_us_universe
 from .logging_utils import get_trading_logger
 from .fx_rates import (
     FXRates, get_fx_rates,
@@ -368,14 +367,14 @@ class Strategy:
         self.tail_hedge_manager = tail_hedge_manager
 
         # Extract sleeve weights from settings
+        # PORTFOLIO SIMPLIFICATION v2.2: Removed single_name and crisis_alpha
         sleeve_settings = settings.get('sleeves', {})
         self.sleeve_weights = {
-            Sleeve.CORE_INDEX_RV: sleeve_settings.get('core_index_rv', 0.35),
-            Sleeve.SECTOR_RV: sleeve_settings.get('sector_rv', 0.25),
-            Sleeve.SINGLE_NAME: sleeve_settings.get('single_name', 0.15),
-            Sleeve.CREDIT_CARRY: sleeve_settings.get('credit_carry', 0.15),
-            Sleeve.CRISIS_ALPHA: sleeve_settings.get('crisis_alpha', 0.05),
-            Sleeve.CASH_BUFFER: sleeve_settings.get('cash_buffer', 0.05)
+            Sleeve.CORE_INDEX_RV: sleeve_settings.get('core_index_rv', 0.20),
+            Sleeve.SECTOR_RV: sleeve_settings.get('sector_rv', 0.20),
+            Sleeve.CREDIT_CARRY: sleeve_settings.get('credit_carry', 0.08),
+            Sleeve.EUROPE_VOL_CONVEX: sleeve_settings.get('europe_vol_convex', 0.18),
+            Sleeve.MONEY_MARKET: sleeve_settings.get('money_market', 0.34),
         }
 
         # ROADMAP Phase C: FX Hedge Policy
@@ -587,34 +586,42 @@ class Strategy:
         sleeve_targets[Sleeve.SECTOR_RV] = sector_targets
         all_positions.update(sector_targets.target_positions)
 
-        # 3. Single Name Sleeve (trend-gated)
-        single_scaling = scaling * trend_multiplier if not trend_result.use_options_only else 0.0
-        single_targets = self._build_single_name_targets(
-            nav, single_scaling, data_feed, risk_decision
-        )
-        sleeve_targets[Sleeve.SINGLE_NAME] = single_targets
-        all_positions.update(single_targets.target_positions)
-
-        # 4. Credit & Carry Sleeve
-        credit_targets = self._build_credit_carry_targets(
-            nav, scaling, data_feed, risk_decision
-        )
+        # 3. Credit & Carry Sleeve (NORMAL regime only - v2.2)
+        # PORTFOLIO SIMPLIFICATION: Credit carry loses money during stress (-0.55 insurance)
+        # Only trade in NORMAL regime to avoid stress period bleeding
+        if risk_decision.regime == RiskRegime.NORMAL:
+            credit_targets = self._build_credit_carry_targets(
+                nav, scaling, data_feed, risk_decision
+            )
+            commentary_parts.append("Credit carry: ACTIVE (NORMAL regime)")
+        else:
+            # Zero allocation in non-NORMAL regimes
+            credit_targets = SleeveTargets(
+                sleeve=Sleeve.CREDIT_CARRY,
+                target_positions={},
+                target_notional=0.0,
+                target_weight=0.0
+            )
+            commentary_parts.append(f"Credit carry: DISABLED ({risk_decision.regime.value} regime)")
         sleeve_targets[Sleeve.CREDIT_CARRY] = credit_targets
         all_positions.update(credit_targets.target_positions)
 
-        # 5. Crisis Alpha Sleeve (handled by TailHedgeManager)
-        crisis_targets = self._build_crisis_alpha_targets(
+        # 4. Europe Vol Convex Sleeve (primary insurance)
+        # PORTFOLIO SIMPLIFICATION v2.2: Merged crisis_alpha into this sleeve
+        # Managed by TailHedgeManager - this provides base structure
+        europe_vol_targets = self._build_europe_vol_targets(
             nav, portfolio, data_feed, risk_decision
         )
-        sleeve_targets[Sleeve.CRISIS_ALPHA] = crisis_targets
-        all_positions.update(crisis_targets.target_positions)
+        sleeve_targets[Sleeve.EUROPE_VOL_CONVEX] = europe_vol_targets
+        all_positions.update(europe_vol_targets.target_positions)
 
-        # 6. Cash Buffer (no positions)
-        sleeve_targets[Sleeve.CASH_BUFFER] = SleeveTargets(
-            sleeve=Sleeve.CASH_BUFFER,
-            target_positions={},
-            target_notional=nav * self.sleeve_weights[Sleeve.CASH_BUFFER],
-            target_weight=self.sleeve_weights[Sleeve.CASH_BUFFER]
+        # 5. Money Market (short-term funds, not idle cash)
+        # PORTFOLIO SIMPLIFICATION v2.2: Renamed from cash_buffer
+        sleeve_targets[Sleeve.MONEY_MARKET] = SleeveTargets(
+            sleeve=Sleeve.MONEY_MARKET,
+            target_positions={},  # No equity positions - invested in money market funds
+            target_notional=nav * self.sleeve_weights[Sleeve.MONEY_MARKET],
+            target_weight=self.sleeve_weights[Sleeve.MONEY_MARKET]
         )
 
         # =====================================================
@@ -936,93 +943,10 @@ class Strategy:
             logger.error(f"Error building sector pair targets: {e}")
             return None
 
-    def _build_single_name_targets(
-        self,
-        nav: float,
-        scaling: float,
-        data_feed: DataFeed,
-        risk_decision: RiskDecision
-    ) -> SleeveTargets:
-        """
-        Build Single Name L/S sleeve targets.
-        US quality growth vs EU "zombies".
-
-        Uses quantitative factor-based screening:
-        - US Longs: Quality (50%) + Momentum (30%) + Size (20%)
-        - EU Shorts: Zombie (50%) + Weakness (30%) + Sector (20%)
-
-        See stock_screener.py for full methodology.
-        """
-        target_weight = self.sleeve_weights[Sleeve.SINGLE_NAME]
-        target_notional = nav * target_weight * scaling
-        notional_per_leg = target_notional / 2
-
-        targets = {}
-        logger = get_trading_logger()
-
-        # Run quantitative screening to select stocks
-        try:
-            long_symbols, short_symbols, screening_metadata = run_screening(
-                top_n=10,
-                logger=logger
-            )
-            logger.logger.info(
-                "stock_screening_complete",
-                extra={
-                    "long_count": len(long_symbols),
-                    "short_count": len(short_symbols),
-                    "screening_date": screening_metadata.get('screening_date'),
-                    "methodology_version": screening_metadata.get('methodology_version')
-                }
-            )
-        except Exception as e:
-            # Fallback to default stocks if screening fails
-            logger.logger.warning(f"Screening failed, using defaults: {e}")
-            long_symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMZN']
-            short_symbols = []
-            screening_metadata = {}
-
-        # US Long Positions - equal weight across screened stocks
-        if long_symbols:
-            us_weight_each = notional_per_leg / len(long_symbols)
-            for stock in long_symbols:
-                try:
-                    price = data_feed.get_last_price(stock)
-                    qty = int(us_weight_each / price)
-                    if qty > 0:
-                        targets[stock] = qty
-                except Exception:
-                    continue
-
-        # EU Short Positions - equal weight across screened stocks
-        if short_symbols:
-            eu_weight_each = notional_per_leg / len(short_symbols)
-            for stock in short_symbols:
-                try:
-                    price = data_feed.get_last_price(stock)
-                    qty = int(eu_weight_each / price)
-                    if qty > 0:
-                        targets[stock] = -qty  # Negative for short
-                except Exception:
-                    continue
-        else:
-            # Fallback: Use EXV1 ETF (UCITS) as proxy for EU shorts if no individual shorts
-            try:
-                price = data_feed.get_last_price('EXV1')
-                qty = int(notional_per_leg / price)
-                if qty > 0:
-                    targets['financials_eufn_single'] = -qty
-            except Exception:
-                pass
-
-        return SleeveTargets(
-            sleeve=Sleeve.SINGLE_NAME,
-            target_positions=targets,
-            target_notional=target_notional,
-            target_weight=target_weight,
-            long_notional=notional_per_leg,
-            short_notional=notional_per_leg
-        )
+    # PORTFOLIO SIMPLIFICATION v2.2: _build_single_name_targets REMOVED
+    # Single name stock picking had -0.334 marginal Sharpe and -82% max drawdown
+    # Ablation analysis showed it actively hurt portfolio performance
+    # See docs/PORTFOLIO_SIMPLIFICATION.md for full analysis
 
     def _build_credit_carry_targets(
         self,
@@ -1083,7 +1007,7 @@ class Strategy:
             short_notional=eu_notional
         )
 
-    def _build_crisis_alpha_targets(
+    def _build_europe_vol_targets(
         self,
         nav: float,
         portfolio: PortfolioState,
@@ -1091,22 +1015,34 @@ class Strategy:
         risk_decision: RiskDecision
     ) -> SleeveTargets:
         """
-        Build Crisis Alpha sleeve targets.
-        Managed by TailHedgeManager - this provides base structure.
+        Build Europe Vol Convex sleeve targets.
+
+        PORTFOLIO SIMPLIFICATION v2.2:
+        - Primary insurance channel (best insurance score: +4.24)
+        - Merged crisis_alpha instruments into this sleeve
+        - Managed by TailHedgeManager for options structures
+
+        Instruments:
+        - VSTOXX calls (50% of sleeve)
+        - SX5E put spreads (35%)
+        - EU banks puts (15%)
         """
-        target_weight = self.sleeve_weights[Sleeve.CRISIS_ALPHA]
+        target_weight = self.sleeve_weights[Sleeve.EUROPE_VOL_CONVEX]
         target_notional = nav * target_weight
 
-        # Crisis sleeve is managed separately by TailHedgeManager
-        # Here we just define the envelope
+        # Europe vol sleeve is managed separately by TailHedgeManager
+        # Here we define the notional envelope - TailHedgeManager handles
+        # the actual option structures (VSTOXX calls, SX5E puts, etc.)
         targets = {}
 
         # In elevated/crisis regime, allocate more to hedges
+        # This is where crisis_alpha budget is now merged
         if risk_decision.regime in [RiskRegime.ELEVATED, RiskRegime.CRISIS]:
-            target_notional *= 1.5  # 50% more hedge budget
+            target_notional *= 1.3  # 30% more hedge budget in stress
+            # Note: Capped at 18% * 1.3 = 23.4% to avoid excessive bleed
 
         return SleeveTargets(
-            sleeve=Sleeve.CRISIS_ALPHA,
+            sleeve=Sleeve.EUROPE_VOL_CONVEX,
             target_positions=targets,
             target_notional=target_notional,
             target_weight=target_weight

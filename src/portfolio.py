@@ -22,13 +22,24 @@ from .fx_rates import FXRates, BASE_CCY, cash_in_base_ccy, get_fx_rates
 
 
 class Sleeve(Enum):
-    """Portfolio sleeve types."""
+    """Portfolio sleeve types.
+
+    PORTFOLIO SIMPLIFICATION v2.2:
+    - REMOVED single_name: -0.334 marginal Sharpe, stock picking doesn't work
+    - REMOVED crisis_alpha: Merged into europe_vol_convex (overlapping instruments)
+    - ADDED europe_vol_convex: Primary insurance channel (+0.368 marginal Sharpe)
+    - RENAMED cash_buffer -> money_market: Short-term funds, not idle cash
+    """
     CORE_INDEX_RV = "core_index_rv"
     SECTOR_RV = "sector_rv"
-    SINGLE_NAME = "single_name"
     CREDIT_CARRY = "credit_carry"
-    CRISIS_ALPHA = "crisis_alpha"
-    CASH_BUFFER = "cash_buffer"
+    EUROPE_VOL_CONVEX = "europe_vol_convex"
+    MONEY_MARKET = "money_market"
+
+    # Deprecated - kept for backward compatibility in position loading
+    SINGLE_NAME = "single_name"  # DEPRECATED: Remove after migration
+    CRISIS_ALPHA = "crisis_alpha"  # DEPRECATED: Use EUROPE_VOL_CONVEX
+    CASH_BUFFER = "cash_buffer"  # DEPRECATED: Use MONEY_MARKET
 
 
 class InstrumentType(Enum):
