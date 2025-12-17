@@ -82,8 +82,17 @@ class Position:
 
     @property
     def cost_basis(self) -> float:
-        """Calculate cost basis of position."""
-        return self.quantity * self.avg_cost * self.multiplier
+        """Calculate cost basis of position.
+
+        NOTE: For futures, IB's avgCost is already per-contract total
+        (i.e., price * multiplier), so we don't multiply again.
+        For stocks/ETFs, avgCost is per-share price.
+        """
+        if self.instrument_type == InstrumentType.FUT:
+            # IB avgCost for futures = price * multiplier already
+            return self.quantity * self.avg_cost
+        else:
+            return self.quantity * self.avg_cost * self.multiplier
 
     @property
     def unrealized_pnl(self) -> float:
