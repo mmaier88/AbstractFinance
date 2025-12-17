@@ -3,6 +3,8 @@ Market data abstraction layer for AbstractFinance.
 Provides unified access to IBKR data with fallbacks to external sources.
 """
 
+import logging
+import time
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -17,6 +19,143 @@ try:
     IB_AVAILABLE = True
 except ImportError:
     IB_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DataQualityMetrics:
+    """
+    Tracks market data quality metrics for observability.
+
+    Monitors success rates, latency, and rejection counts.
+    """
+    source: str
+    requests_total: int = 0
+    requests_success: int = 0
+    requests_failed: int = 0
+    total_latency_ms: float = 0.0
+    last_error: Optional[str] = None
+    last_error_time: Optional[datetime] = None
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as percentage."""
+        if self.requests_total == 0:
+            return 100.0
+        return (self.requests_success / self.requests_total) * 100.0
+
+    @property
+    def avg_latency_ms(self) -> float:
+        """Calculate average latency in milliseconds."""
+        if self.requests_success == 0:
+            return 0.0
+        return self.total_latency_ms / self.requests_success
+
+    def record_success(self, latency_ms: float) -> None:
+        """Record a successful request."""
+        self.requests_total += 1
+        self.requests_success += 1
+        self.total_latency_ms += latency_ms
+
+    def record_failure(self, error: str) -> None:
+        """Record a failed request."""
+        self.requests_total += 1
+        self.requests_failed += 1
+        self.last_error = error
+        self.last_error_time = datetime.now()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for logging/export."""
+        return {
+            "source": self.source,
+            "requests_total": self.requests_total,
+            "requests_success": self.requests_success,
+            "requests_failed": self.requests_failed,
+            "success_rate_pct": round(self.success_rate, 2),
+            "avg_latency_ms": round(self.avg_latency_ms, 2),
+            "last_error": self.last_error,
+            "last_error_time": self.last_error_time.isoformat() if self.last_error_time else None,
+        }
+
+
+class CircuitBreaker:
+    """
+    Circuit breaker to back off after consecutive failures.
+
+    Prevents hammering a failing service (IBKR, Yahoo) with requests.
+    Opens after threshold failures, closes after recovery_time_seconds.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        recovery_time_seconds: float = 60.0,
+        name: str = "default",
+    ):
+        """
+        Initialize circuit breaker.
+
+        Args:
+            failure_threshold: Number of consecutive failures before opening
+            recovery_time_seconds: Time before attempting recovery
+            name: Identifier for logging
+        """
+        self.failure_threshold = failure_threshold
+        self.recovery_time_seconds = recovery_time_seconds
+        self.name = name
+
+        self._failure_count = 0
+        self._last_failure_time: Optional[datetime] = None
+        self._is_open = False
+
+    def is_available(self) -> bool:
+        """
+        Check if service is available (circuit closed or in recovery).
+
+        Returns:
+            True if requests should be attempted
+        """
+        if not self._is_open:
+            return True
+
+        # Check if recovery time has passed
+        if self._last_failure_time is not None:
+            elapsed = (datetime.now() - self._last_failure_time).total_seconds()
+            if elapsed >= self.recovery_time_seconds:
+                logger.info(f"Circuit breaker {self.name}: attempting recovery")
+                return True
+
+        return False
+
+    def record_success(self) -> None:
+        """Record successful request, reset failure count."""
+        if self._is_open:
+            logger.info(f"Circuit breaker {self.name}: recovered, closing circuit")
+        self._failure_count = 0
+        self._is_open = False
+
+    def record_failure(self) -> None:
+        """Record failed request, may open circuit."""
+        self._failure_count += 1
+        self._last_failure_time = datetime.now()
+
+        if self._failure_count >= self.failure_threshold:
+            if not self._is_open:
+                logger.warning(
+                    f"Circuit breaker {self.name}: opening after {self._failure_count} failures"
+                )
+            self._is_open = True
+
+    @property
+    def is_open(self) -> bool:
+        """Check if circuit is currently open."""
+        return self._is_open
+
+    @property
+    def failure_count(self) -> int:
+        """Get current failure count."""
+        return self._failure_count
 
 
 @dataclass
@@ -37,6 +176,16 @@ class DataFeed:
     Market data feed abstraction.
     Supports IBKR as primary source with yfinance as fallback for backtesting.
     """
+
+    # LSE ETFs quoted in GBX (pence) that need conversion to GBP
+    # This whitelist replaces the unreliable price > 100 heuristic
+    GBX_QUOTED_ETFS = {
+        # iShares UCITS ETFs on LSE
+        "CSPX", "CNDX", "IUIT", "WTCH", "SEMI", "IUHC", "SBIO", "BTEK",
+        "IUQA", "IUMO", "SMEA", "IUKD", "LQDE", "IHYU", "HYLD", "FLOT",
+        "FLOA", "IHYG",
+        # Add other GBX-quoted ETFs as discovered
+    }
 
     # Mapping from internal symbols to yfinance tickers
     YFINANCE_MAPPING = {
@@ -145,6 +294,22 @@ class DataFeed:
         self._price_cache: Dict[str, tuple] = {}
         # History cache: {(instrument_id, lookback): (df, timestamp)}
         self._history_cache: Dict[tuple, tuple] = {}
+
+        # Circuit breakers for resilience
+        self._ibkr_circuit = CircuitBreaker(
+            failure_threshold=3,
+            recovery_time_seconds=60.0,
+            name="IBKR"
+        )
+        self._yahoo_circuit = CircuitBreaker(
+            failure_threshold=5,
+            recovery_time_seconds=120.0,
+            name="Yahoo"
+        )
+
+        # Data quality metrics for observability
+        self._ibkr_metrics = DataQualityMetrics(source="IBKR")
+        self._yahoo_metrics = DataQualityMetrics(source="Yahoo")
 
         # Build instrument lookup
         self._instruments: Dict[str, InstrumentSpec] = {}
@@ -271,6 +436,110 @@ class DataFeed:
 
         return None
 
+    def get_prices_batch(self, instrument_ids: List[str]) -> Dict[str, Optional[float]]:
+        """
+        Get prices for multiple instruments with single wait.
+
+        Args:
+            instrument_ids: List of instrument identifiers
+
+        Returns:
+            Dict mapping instrument_id to price (None if unavailable)
+        """
+        results: Dict[str, Optional[float]] = {}
+        tickers_to_fetch: List[tuple] = []  # (instrument_id, contract, spec)
+
+        # First pass: check cache and prepare IBKR requests
+        for inst_id in instrument_ids:
+            # Check cache first
+            if inst_id in self._price_cache:
+                price, timestamp = self._price_cache[inst_id]
+                if self._is_cache_valid(timestamp):
+                    results[inst_id] = price
+                    continue
+
+            spec = self._get_instrument_spec(inst_id)
+
+            # Prepare IBKR request
+            if self.ib and self.ib.isConnected():
+                contract = self._get_ib_contract(inst_id)
+                if contract:
+                    tickers_to_fetch.append((inst_id, contract, spec))
+                else:
+                    results[inst_id] = None
+            else:
+                results[inst_id] = None
+
+        # Batch request to IBKR
+        ibkr_tickers = []
+        if tickers_to_fetch:
+            for inst_id, contract, spec in tickers_to_fetch:
+                try:
+                    self.ib.qualifyContracts(contract)
+                    ticker = self.ib.reqMktData(contract, '', False, False)
+                    ibkr_tickers.append((inst_id, contract, spec, ticker))
+                except Exception as e:
+                    logger.debug(f"IBKR qualify failed for {inst_id}: {e}")
+                    results[inst_id] = None
+
+            # Single wait for all tickers
+            if ibkr_tickers:
+                self.ib.sleep(1.5)  # Single wait for batch
+
+            # Collect results
+            for inst_id, contract, spec, ticker in ibkr_tickers:
+                try:
+                    price = None
+                    if ticker.last and ticker.last > 0:
+                        price = ticker.last
+                    elif ticker.close and ticker.close > 0:
+                        price = ticker.close
+                    self.ib.cancelMktData(contract)
+
+                    # GBX conversion
+                    if price and spec and spec.symbol in self.GBX_QUOTED_ETFS:
+                        price = price / 100.0
+                        logger.debug(f"Batch: converted {spec.symbol} from GBX to GBP")
+
+                    if price is not None:
+                        self._price_cache[inst_id] = (price, datetime.now())
+
+                    results[inst_id] = price
+                except Exception as e:
+                    logger.debug(f"IBKR batch price failed for {inst_id}: {e}")
+                    results[inst_id] = None
+
+        # Fallback to yfinance for missing prices
+        missing = [k for k, v in results.items() if v is None]
+        for inst_id in missing:
+            try:
+                yf_ticker = self._get_yfinance_ticker(inst_id)
+                data = yf.Ticker(yf_ticker)
+                hist = data.history(period="1d")
+                if not hist.empty:
+                    price = hist['Close'].iloc[-1]
+                    spec = self._get_instrument_spec(inst_id)
+                    if spec and spec.symbol in self.GBX_QUOTED_ETFS:
+                        price = price / 100.0
+                    self._price_cache[inst_id] = (price, datetime.now())
+                    results[inst_id] = price
+            except Exception as e:
+                logger.debug(f"Yahoo batch fallback failed for {inst_id}: {e}")
+
+        # Handle option hedge defaults
+        for inst_id in instrument_ids:
+            if results.get(inst_id) is None:
+                option_hedge_defaults = {
+                    "vstoxx_call": 18.0,
+                    "sx5e_put": 4800.0,
+                    "vix_call": 15.0,
+                    "eu_bank_put": 100.0,
+                }
+                if inst_id in option_hedge_defaults:
+                    results[inst_id] = option_hedge_defaults[inst_id]
+
+        return results
+
     def get_last_price(self, instrument_id: str) -> float:
         """
         Get last traded price for an instrument.
@@ -290,10 +559,11 @@ class DataFeed:
         price = None
         spec = self._get_instrument_spec(instrument_id)
 
-        # Try IBKR first
-        if self.ib and self.ib.isConnected():
+        # Try IBKR first (with circuit breaker and metrics)
+        if self.ib and self.ib.isConnected() and self._ibkr_circuit.is_available():
             contract = self._get_ib_contract(instrument_id)
             if contract:
+                start_time = time.time()
                 try:
                     self.ib.qualifyContracts(contract)
                     ticker = self.ib.reqMktData(contract, '', False, False)
@@ -304,31 +574,47 @@ class DataFeed:
                         price = ticker.close
                     self.ib.cancelMktData(contract)
 
-                    # Convert GBX (pence) to GBP for GBP-denominated UK stocks from IBKR
-                    # IBKR may return prices in pence for some LSE-listed securities
-                    if price and spec and spec.currency == 'GBP' and spec.exchange == 'LSE':
-                        # Heuristic: if price > 100 and typical stock price < 50 GBP,
-                        # it's likely in pence. Most LSE ETFs trade < 100 GBP.
-                        if price > 100:
-                            price = price / 100.0
-                except Exception:
-                    pass
+                    # Convert GBX (pence) to GBP for known GBX-quoted LSE ETFs
+                    if price and spec and spec.symbol in self.GBX_QUOTED_ETFS:
+                        price = price / 100.0
+                        logger.debug(f"Converted {spec.symbol} from GBX to GBP: {price * 100:.2f}p -> {price:.2f} GBP")
 
-        # Fallback to yfinance
-        if price is None:
+                    latency_ms = (time.time() - start_time) * 1000
+                    if price:
+                        self._ibkr_circuit.record_success()
+                        self._ibkr_metrics.record_success(latency_ms)
+                    else:
+                        self._ibkr_circuit.record_failure()
+                        self._ibkr_metrics.record_failure(f"No price data for {instrument_id}")
+                except Exception as e:
+                    logger.debug(f"IBKR price fetch failed for {instrument_id}: {e}")
+                    self._ibkr_circuit.record_failure()
+                    self._ibkr_metrics.record_failure(str(e))
+
+        # Fallback to yfinance (with circuit breaker and metrics)
+        if price is None and self._yahoo_circuit.is_available():
+            start_time = time.time()
             try:
                 yf_ticker = self._get_yfinance_ticker(instrument_id)
                 data = yf.Ticker(yf_ticker)
                 hist = data.history(period="1d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
-                    # Convert GBX (pence) to GBP for GBP-denominated UK stocks
-                    # Yahoo Finance returns some UK stocks in pence, not pounds
-                    if spec and spec.currency == 'GBP' and yf_ticker.endswith('.L'):
-                        # GBP stocks on LSE are quoted in pence on Yahoo
+                    # Convert GBX (pence) to GBP for known GBX-quoted LSE ETFs
+                    # Yahoo Finance returns these in pence
+                    if spec and spec.symbol in self.GBX_QUOTED_ETFS:
                         price = price / 100.0
-            except Exception:
-                pass
+                        logger.debug(f"Converted {spec.symbol} from GBX to GBP (Yahoo): {price * 100:.2f}p -> {price:.2f} GBP")
+                    latency_ms = (time.time() - start_time) * 1000
+                    self._yahoo_circuit.record_success()
+                    self._yahoo_metrics.record_success(latency_ms)
+                else:
+                    self._yahoo_circuit.record_failure()
+                    self._yahoo_metrics.record_failure(f"Empty history for {instrument_id}")
+            except Exception as e:
+                logger.debug(f"Yahoo Finance price fetch failed for {instrument_id}: {e}")
+                self._yahoo_circuit.record_failure()
+                self._yahoo_metrics.record_failure(str(e))
 
         # Fallback: Default prices for option hedge placeholders
         # These are used when market data is unavailable (missing subscriptions)
@@ -404,8 +690,8 @@ class DataFeed:
                         })
                         df.index = pd.to_datetime(df['date'])
                         df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"IBKR history fetch failed for {instrument_id}: {e}")
 
         # Fallback to yfinance
         if df is None or df.empty:
@@ -418,8 +704,8 @@ class DataFeed:
                 )
                 if not df.empty:
                     df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Yahoo Finance history fetch failed for {instrument_id}: {e}")
 
         if df is not None and not df.empty:
             # Ensure we have the right number of days
@@ -450,8 +736,8 @@ class DataFeed:
             hist = data.history(period="1d")
             if not hist.empty:
                 vix = hist['Close'].iloc[-1]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"VIX fetch failed: {e}")
 
         if vix is not None:
             self._price_cache["VIX"] = (vix, datetime.now())
@@ -610,6 +896,43 @@ class DataFeed:
         """Clear all cached data."""
         self._price_cache.clear()
         self._history_cache.clear()
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get data quality metrics for monitoring.
+
+        Returns:
+            Dict with IBKR and Yahoo metrics
+        """
+        return {
+            "ibkr": self._ibkr_metrics.to_dict(),
+            "yahoo": self._yahoo_metrics.to_dict(),
+            "circuit_breakers": {
+                "ibkr_open": self._ibkr_circuit.is_open,
+                "ibkr_failures": self._ibkr_circuit.failure_count,
+                "yahoo_open": self._yahoo_circuit.is_open,
+                "yahoo_failures": self._yahoo_circuit.failure_count,
+            }
+        }
+
+    def log_metrics_summary(self) -> None:
+        """Log a summary of data quality metrics."""
+        metrics = self.get_metrics()
+        ibkr = metrics["ibkr"]
+        yahoo = metrics["yahoo"]
+
+        logger.info(
+            f"Market Data Metrics - "
+            f"IBKR: {ibkr['success_rate_pct']:.1f}% success ({ibkr['requests_total']} reqs, "
+            f"{ibkr['avg_latency_ms']:.0f}ms avg) | "
+            f"Yahoo: {yahoo['success_rate_pct']:.1f}% success ({yahoo['requests_total']} reqs, "
+            f"{yahoo['avg_latency_ms']:.0f}ms avg)"
+        )
+
+        if self._ibkr_circuit.is_open:
+            logger.warning("IBKR circuit breaker is OPEN")
+        if self._yahoo_circuit.is_open:
+            logger.warning("Yahoo circuit breaker is OPEN")
 
 
 def load_instruments_config(config_path: str = "config/instruments.yaml") -> Dict:

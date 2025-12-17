@@ -1037,6 +1037,8 @@ class IBKRTransport:
         """
         Get current market data snapshot for instrument.
 
+        Tries real-time market data first, falls back to portfolio prices.
+
         Args:
             instrument_id: Internal instrument ID
 
@@ -1053,6 +1055,12 @@ class IBKRTransport:
         if not contract:
             return None
 
+        last = None
+        bid = None
+        ask = None
+        close = None
+
+        # Try real-time market data first
         try:
             ticker = self.ib_client.ib.reqMktData(contract, '', False, False)
             self.ib_client.ib.sleep(1)  # Wait for data
@@ -1064,29 +1072,54 @@ class IBKRTransport:
 
             self.ib_client.ib.cancelMktData(contract)
 
-            # Handle GBP pence conversion
-            if contract.currency == 'GBP':
-                if last and last > 100:
-                    last = last / 100.0
-                if bid and bid > 100:
-                    bid = bid / 100.0
-                if ask and ask > 100:
-                    ask = ask / 100.0
-                if close and close > 100:
-                    close = close / 100.0
-
-            return MarketDataSnapshot(
-                symbol=instrument_id,
-                ts=datetime.now(),
-                last=last,
-                bid=bid,
-                ask=ask,
-                close=close,
-            )
-
         except Exception as e:
-            self.logger.logger.warning(f"Market data fetch failed for {instrument_id}: {e}")
+            self.logger.logger.debug(f"Real-time market data failed for {instrument_id}: {e}")
+
+        # Fall back to portfolio prices if real-time data unavailable
+        if last is None and close is None:
+            try:
+                # Use the contract symbol (already resolved from instruments config)
+                # This maps us_index_etf -> CSPX, hy_hyg -> IHYU, etc.
+                target_symbol = contract.symbol
+
+                # Search portfolio items for matching symbol
+                for item in self.ib_client.ib.portfolio():
+                    if item.contract.symbol == target_symbol:
+                        # Found matching position - use marketPrice as reference
+                        if item.marketPrice and item.marketPrice > 0:
+                            last = item.marketPrice
+                            close = item.marketPrice
+                            self.logger.logger.debug(
+                                f"Using portfolio price for {instrument_id} ({target_symbol}): {last}"
+                            )
+                            break
+            except Exception as e:
+                self.logger.logger.debug(f"Portfolio price fallback failed for {instrument_id}: {e}")
+
+        # Handle GBP pence conversion
+        if contract.currency == 'GBP':
+            if last and last > 100:
+                last = last / 100.0
+            if bid and bid > 100:
+                bid = bid / 100.0
+            if ask and ask > 100:
+                ask = ask / 100.0
+            if close and close > 100:
+                close = close / 100.0
+
+        # If we still have no price data, return None
+        if last is None and close is None:
+            self.logger.logger.warning(f"No price data available for {instrument_id}")
             return None
+
+        return MarketDataSnapshot(
+            symbol=instrument_id,
+            ts=datetime.now(),
+            last=last,
+            bid=bid,
+            ask=ask,
+            close=close,
+        )
 
     def wait_for_fills(
         self,

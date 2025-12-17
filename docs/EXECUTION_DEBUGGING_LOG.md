@@ -197,27 +197,25 @@ Several instruments show "market data not subscribed" errors:
 
 ---
 
-## Market Data Improvements Roadmap
+## Market Data Improvements (COMPLETED Dec 17, 2025)
 
-See `CLAUDE.md` for full implementation details with code examples.
+All 6 issues have been implemented:
 
-| Issue | Priority | Summary | Location |
-|-------|----------|---------|----------|
-| 1. GBP/Pence | **High** | Use ETF whitelist instead of price > 100 heuristic | `data_feeds.py:307-313` |
-| 2. Blocking sleep | Medium | Pre-subscribe or batch fetch with single wait | `data_feeds.py:299-300` |
-| 3. Silent exceptions | **High** | Replace `except: pass` with debug logging | `data_feeds.py:314-315, 330-331` |
-| 4. Sequential fetch | Medium | Batch `get_snapshots()` requests | `marketdata/live.py:127-130` |
-| 5. Circuit breaker | Low | Back off after consecutive failures | New utility |
-| 6. Data metrics | Low | Track success rates, latency, rejections | New module |
+| Issue | Status | Summary | Location |
+|-------|--------|---------|----------|
+| 1. GBP/Pence | **DONE** | Added `GBX_QUOTED_ETFS` whitelist | `data_feeds.py:44-52` |
+| 2. Blocking sleep | **DONE** | Added `get_prices_batch()` with single wait | `data_feeds.py:387-480` |
+| 3. Silent exceptions | **DONE** | Added debug logging to all exceptions | `data_feeds.py:*` |
+| 4. Sequential fetch | **DONE** | Batch `_batch_fetch_from_ib_insync()` | `marketdata/live.py:148-237` |
+| 5. Circuit breaker | **DONE** | `CircuitBreaker` class with auto-recovery | `data_feeds.py:81-157` |
+| 6. Data metrics | **DONE** | `DataQualityMetrics` + `get_metrics()` | `data_feeds.py:25-78, 900-935` |
 
-### Recommended Implementation Order
+### Key Improvements
 
-1. **Issue 3** (silent exceptions) - Quick fix, immediate debugging benefit
-2. **Issue 1** (GBP/pence) - High risk of wrong prices affecting portfolio valuation
-3. **Issue 2** (blocking sleep) - Performance: 20 instruments = 20 seconds currently
-4. **Issue 4** (batch fetch) - Performance improvement for multi-instrument requests
-5. **Issue 5** (circuit breaker) - Resilience against flaky IBKR connection
-6. **Issue 6** (metrics) - Observability for production monitoring
+- **GBX Whitelist**: Replaced unreliable price > 100 heuristic with explicit ETF list
+- **Batch Fetching**: N instruments = 1 wait instead of N waits (20x faster for 20 instruments)
+- **Circuit Breakers**: IBKR (3 failures, 60s recovery) and Yahoo (5 failures, 120s recovery)
+- **Metrics**: Track success rates, latency, and last error for monitoring
 
 ---
 

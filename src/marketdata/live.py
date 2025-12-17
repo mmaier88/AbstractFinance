@@ -115,7 +115,9 @@ class LiveMarketData:
         require_quotes: bool = True,
     ) -> Dict[str, Optional[MarketDataSnapshot]]:
         """
-        Get live snapshots for multiple instruments.
+        Get live snapshots for multiple instruments with batch request.
+
+        Uses single wait for all instruments instead of sequential waits.
 
         Args:
             instrument_ids: List of instrument identifiers
@@ -124,9 +126,114 @@ class LiveMarketData:
         Returns:
             Dictionary of instrument_id -> MarketDataSnapshot (or None)
         """
-        results = {}
+        results: Dict[str, Optional[MarketDataSnapshot]] = {}
+
+        if not instrument_ids:
+            return results
+
+        # Check if we have direct ib_insync access for batch fetching
+        if (
+            self.ib_client is not None
+            and hasattr(self.ib_client, 'ib')
+            and self.ib_client.ib is not None
+        ):
+            results = self._batch_fetch_from_ib_insync(instrument_ids, require_quotes)
+        else:
+            # Fallback to sequential fetch if no direct IB access
+            for inst_id in instrument_ids:
+                results[inst_id] = self.get_snapshot(inst_id, require_quotes)
+
+        return results
+
+    def _batch_fetch_from_ib_insync(
+        self,
+        instrument_ids: List[str],
+        require_quotes: bool = True,
+    ) -> Dict[str, Optional[MarketDataSnapshot]]:
+        """
+        Batch fetch snapshots from ib_insync with single wait.
+
+        Performance improvement: N instruments = 1 wait instead of N waits.
+        """
+        results: Dict[str, Optional[MarketDataSnapshot]] = {}
+        ib = self.ib_client.ib
+
+        # Build contracts for each instrument
+        contracts_to_fetch: List[tuple] = []  # (inst_id, contract)
+
         for inst_id in instrument_ids:
-            results[inst_id] = self.get_snapshot(inst_id, require_quotes)
+            contract = None
+
+            # Find contract in trades
+            for trade in ib.trades():
+                if trade.contract.symbol == inst_id:
+                    contract = trade.contract
+                    break
+
+            # Find contract in positions
+            if contract is None:
+                for pos in ib.positions():
+                    if pos.contract.symbol == inst_id:
+                        contract = pos.contract
+                        break
+
+            if contract is not None:
+                contracts_to_fetch.append((inst_id, contract))
+            else:
+                logger.debug(f"Contract not found for {inst_id} in batch fetch")
+                results[inst_id] = None
+
+        if not contracts_to_fetch:
+            return results
+
+        # Request market data for all contracts
+        tickers: List[tuple] = []  # (inst_id, contract, ticker)
+        for inst_id, contract in contracts_to_fetch:
+            try:
+                ticker = ib.reqMktData(contract, '', False, False)
+                tickers.append((inst_id, contract, ticker))
+            except Exception as e:
+                logger.debug(f"Failed to request market data for {inst_id}: {e}")
+                results[inst_id] = None
+
+        # Single wait for all tickers
+        if tickers:
+            ib.sleep(self.timeout_ms / 1000.0)
+
+        # Collect results and cancel market data
+        for inst_id, contract, ticker in tickers:
+            try:
+                if ticker is None:
+                    results[inst_id] = None
+                    continue
+
+                snapshot = MarketDataSnapshot(
+                    symbol=inst_id,
+                    ts=datetime.now(),
+                    bid=ticker.bid if ticker.bid and ticker.bid > 0 else None,
+                    ask=ticker.ask if ticker.ask and ticker.ask > 0 else None,
+                    last=ticker.last if ticker.last and ticker.last > 0 else None,
+                    close=ticker.close if ticker.close and ticker.close > 0 else None,
+                    volume=int(ticker.volume) if ticker.volume else None,
+                )
+
+                # Validate quality
+                if not self._validate_quality(snapshot, require_quotes):
+                    logger.warning(f"Quote quality check failed for {inst_id} - NO TRADE")
+                    results[inst_id] = None
+                else:
+                    # Update cache
+                    self._cache[inst_id] = snapshot
+                    self._cache_timestamps[inst_id] = datetime.now()
+                    results[inst_id] = snapshot
+
+                # Cancel market data subscription
+                ib.cancelMktData(contract)
+
+            except Exception as e:
+                logger.error(f"Failed to process ticker for {inst_id}: {e}")
+                results[inst_id] = None
+
         return results
 
     def _fetch_ibkr_snapshot(
