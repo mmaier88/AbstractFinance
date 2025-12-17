@@ -1138,11 +1138,11 @@ class DailyScheduler:
             # Convert back to intents for execution - only non-zero positions
             netted_intents = []
             for net_pos in net_positions:
-                if net_pos.net_quantity != 0:
+                if net_pos.net_qty != 0:
                     netted_intents.append(OrderIntent(
                         instrument_id=net_pos.instrument_id,
-                        side="BUY" if net_pos.net_quantity > 0 else "SELL",
-                        quantity=abs(net_pos.net_quantity),
+                        side="BUY" if net_pos.net_qty > 0 else "SELL",
+                        quantity=abs(net_pos.net_qty),
                         reason="rebalance",
                         sleeve="netted",
                         urgency="normal",
