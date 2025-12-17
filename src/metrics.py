@@ -327,6 +327,95 @@ run_ledger_status = Gauge(
 
 
 # =============================================================================
+# Pricing Tier Metrics (Execution Engine Reliability)
+# =============================================================================
+
+pricing_tier_requests_total = Counter(
+    'abstractfinance_pricing_tier_requests_total',
+    'Total price requests by tier (a=realtime, b=delayed, c=portfolio, d=cache, e=guardrail)',
+    ['tier']
+)
+
+pricing_tier_latency_seconds = Histogram(
+    'abstractfinance_pricing_tier_latency_seconds',
+    'Pricing resolution latency by tier',
+    ['tier'],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+)
+
+pricing_source_usage_total = Counter(
+    'abstractfinance_pricing_source_usage_total',
+    'Pricing source usage count',
+    ['source']  # ibkr_realtime, ibkr_delayed, portfolio, cache, guardrail
+)
+
+pricing_confidence_avg = Gauge(
+    'abstractfinance_pricing_confidence_avg',
+    'Average pricing confidence score (0-1)'
+)
+
+pricing_cache_hits = Counter(
+    'abstractfinance_pricing_cache_hits_total',
+    'Price cache hits'
+)
+
+pricing_cache_misses = Counter(
+    'abstractfinance_pricing_cache_misses_total',
+    'Price cache misses'
+)
+
+pricing_cache_entries = Gauge(
+    'abstractfinance_pricing_cache_entries',
+    'Current number of cached prices'
+)
+
+pricing_failures_total = Counter(
+    'abstractfinance_pricing_failures_total',
+    'Total pricing failures (no price found)',
+    ['instrument']
+)
+
+pricing_fallback_total = Counter(
+    'abstractfinance_pricing_fallback_total',
+    'Price fallback events',
+    ['from_tier', 'to_tier']
+)
+
+# Limit order generation metrics
+limit_orders_generated_total = Counter(
+    'abstractfinance_limit_orders_generated_total',
+    'Total limit orders generated',
+    ['instrument', 'side']
+)
+
+limit_order_spread_bps = Histogram(
+    'abstractfinance_limit_order_spread_bps',
+    'Limit order spread from reference price in basis points',
+    ['tier'],
+    buckets=(5, 10, 20, 30, 50, 75, 100, 150, 200)
+)
+
+# Option contract resolution metrics
+option_chain_queries_total = Counter(
+    'abstractfinance_option_chain_queries_total',
+    'Option chain query attempts',
+    ['abstract_instrument']
+)
+
+option_contract_resolved_total = Counter(
+    'abstractfinance_option_contract_resolved_total',
+    'Successfully resolved option contracts',
+    ['abstract_instrument']
+)
+
+option_contract_fallback_total = Counter(
+    'abstractfinance_option_contract_fallback_total',
+    'Option contracts using fallback (guardrail) values',
+    ['abstract_instrument']
+)
+
+
+# =============================================================================
 # Scheduler Metrics
 # =============================================================================
 
@@ -632,3 +721,85 @@ def record_idempotency_duplicate_prevented():
 def update_run_ledger_status(status: int):
     """Update run ledger status (Phase A). 0=PLANNED, 1=SUBMITTED, 2=FILLED, 3=DONE, 4=ABORTED."""
     run_ledger_status.set(status)
+
+
+# =============================================================================
+# Pricing Tier Helper Functions (Execution Engine Reliability)
+# =============================================================================
+
+def record_pricing_request(tier: str, latency_seconds: float = 0, source: str = None):
+    """
+    Record a pricing tier request.
+
+    Args:
+        tier: Pricing tier (a, b, c, d, e)
+        latency_seconds: Time taken to resolve price
+        source: Source identifier (ibkr_realtime, ibkr_delayed, portfolio, cache, guardrail)
+    """
+    pricing_tier_requests_total.labels(tier=tier).inc()
+    if latency_seconds > 0:
+        pricing_tier_latency_seconds.labels(tier=tier).observe(latency_seconds)
+    if source:
+        pricing_source_usage_total.labels(source=source).inc()
+
+
+def record_pricing_failure(instrument: str):
+    """Record a pricing failure (no price found for instrument)."""
+    pricing_failures_total.labels(instrument=instrument).inc()
+
+
+def record_pricing_fallback(from_tier: str, to_tier: str):
+    """Record a pricing fallback from one tier to another."""
+    pricing_fallback_total.labels(from_tier=from_tier, to_tier=to_tier).inc()
+
+
+def update_pricing_cache_metrics(hits: int, misses: int, entries: int):
+    """Update price cache metrics."""
+    # Note: These are counters, so we increment by the delta since last update
+    # For simplicity, we set the gauge directly for entries
+    pricing_cache_entries.set(entries)
+
+
+def record_pricing_cache_hit():
+    """Record a price cache hit."""
+    pricing_cache_hits.inc()
+
+
+def record_pricing_cache_miss():
+    """Record a price cache miss."""
+    pricing_cache_misses.inc()
+
+
+def update_pricing_confidence(confidence: float):
+    """Update average pricing confidence score."""
+    pricing_confidence_avg.set(confidence)
+
+
+def record_limit_order_generated(instrument: str, side: str, spread_bps: float, tier: str):
+    """
+    Record a limit order generation.
+
+    Args:
+        instrument: Instrument identifier
+        side: BUY or SELL
+        spread_bps: Spread from reference price in basis points
+        tier: Pricing tier used
+    """
+    limit_orders_generated_total.labels(instrument=instrument, side=side).inc()
+    limit_order_spread_bps.labels(tier=tier).observe(spread_bps)
+
+
+def record_option_chain_query(abstract_instrument: str, success: bool, is_fallback: bool = False):
+    """
+    Record an option chain query.
+
+    Args:
+        abstract_instrument: Abstract option identifier (vix_call, vstoxx_call, etc.)
+        success: Whether the query succeeded
+        is_fallback: Whether fallback/guardrail values were used
+    """
+    option_chain_queries_total.labels(abstract_instrument=abstract_instrument).inc()
+    if success:
+        option_contract_resolved_total.labels(abstract_instrument=abstract_instrument).inc()
+    if is_fallback:
+        option_contract_fallback_total.labels(abstract_instrument=abstract_instrument).inc()
