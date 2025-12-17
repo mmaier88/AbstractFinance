@@ -386,8 +386,10 @@ class DailyScheduler:
                     )
 
                     # Initialize BasketExecutor
+                    # BasketExecutor expects config and instruments
                     self.basket_executor = BasketExecutor(
-                        min_trade_notional=self.execution_config.min_trade_notional_usd,
+                        config=self.execution_config,
+                        instruments={},  # Instrument specs loaded dynamically
                     )
 
                     # Initialize PairExecutor for legging protection
