@@ -378,10 +378,16 @@ class IBClient:
             avg_cost = item.averageCost
             market_price = item.marketPrice
 
-            # For futures, IBKR's costs include multiplier effect - normalize
-            if contract.secType == "FUT" and multiplier > 1:
-                avg_cost = avg_cost / multiplier
-                market_price = market_price / multiplier if market_price else avg_cost
+            # Determine instrument type for proper P&L calculation
+            if contract.secType == "FUT":
+                inst_type = InstrumentType.FUT
+                # For futures, IB's avgCost is already multiplied (price × multiplier)
+                # but marketPrice is per-unit. We pass raw values to Position
+                # and let cost_basis/market_value handle the multiplier correctly.
+            elif contract.secType == "OPT":
+                inst_type = InstrumentType.OPT
+            else:
+                inst_type = InstrumentType.ETF
 
             # Handle GBP pence conversion for LSE-listed securities
             if contract.currency == 'GBP':
@@ -392,7 +398,11 @@ class IBClient:
 
             # Fallback to avgCost if no market price
             if not market_price or market_price <= 0:
-                market_price = avg_cost
+                # For futures, avgCost is already multiplied, so derive unit price
+                if inst_type == InstrumentType.FUT and multiplier > 1:
+                    market_price = avg_cost / multiplier
+                else:
+                    market_price = avg_cost
 
             position = Position(
                 instrument_id=instrument_id,
@@ -400,7 +410,8 @@ class IBClient:
                 avg_cost=avg_cost,
                 market_price=market_price,
                 multiplier=multiplier,
-                currency=contract.currency
+                currency=contract.currency,
+                instrument_type=inst_type
             )
 
             positions[instrument_id] = position
