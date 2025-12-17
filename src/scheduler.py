@@ -1117,18 +1117,32 @@ class DailyScheduler:
         prices = {}
 
         # Build fallback prices from portfolio positions (IBKR already provides market prices)
+        # Portfolio positions use IBKR symbols (e.g., "CSPX") while orders may use config IDs (e.g., "us_index_etf")
         position_prices = {}
         if hasattr(self, 'portfolio') and self.portfolio:
             for pos in self.portfolio.positions:
                 if pos.market_price and pos.market_price > 0:
                     position_prices[pos.instrument_id] = pos.market_price
 
+        # Build reverse mapping: config instrument_id -> IBKR symbol
+        config_to_symbol = {}
+        for category, insts in self.instruments.items():
+            if isinstance(insts, dict):
+                for inst_id, spec in insts.items():
+                    if isinstance(spec, dict) and "symbol" in spec:
+                        config_to_symbol[inst_id] = spec["symbol"]
+
         for order in orders:
             # Get current price for netting calculations
             price = self.data_feed.get_last_price(order.instrument_id)
             if not price:
-                # Fallback to portfolio position price
+                # Fallback 1: Try portfolio position price directly
                 price = position_prices.get(order.instrument_id)
+            if not price:
+                # Fallback 2: Map config ID to IBKR symbol and look up
+                ibkr_symbol = config_to_symbol.get(order.instrument_id)
+                if ibkr_symbol:
+                    price = position_prices.get(ibkr_symbol)
             if price:
                 prices[order.instrument_id] = price
 
