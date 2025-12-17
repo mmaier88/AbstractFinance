@@ -115,7 +115,7 @@ AbstractFinance/
 │   ├── reconnect.py           # Watchdog, heartbeat, auto-reconnect
 │   ├── scheduler.py           # Continuous loop orchestrator (713 lines)
 │   ├── futures_rollover.py    # Automatic futures rollover detection & execution
-│   ├── stock_screener.py      # Multi-factor stock selection (589 lines)
+│   ├── europe_vol.py          # Europe vol convexity engine (596 lines)
 │   ├── backtest.py            # Historical + Monte Carlo (20+ metrics)
 │   ├── paper_trading.py       # 60-day burn-in with validation gates
 │   ├── alerts.py              # Telegram/email notifications
@@ -236,13 +236,13 @@ gross_leverage_max: 2.0          # 200% max gross exposure
 hedge_budget_annual_pct: 0.025   # 2.5% for tail hedges
 max_drawdown_pct: 0.10           # 10% emergency de-risk
 
+# Portfolio Simplification v2.2
 sleeves:
-  core_index_rv: 0.35
-  sector_rv: 0.25
-  single_name: 0.15
-  credit_carry: 0.15
-  crisis_alpha: 0.05
-  cash_buffer: 0.05
+  core_index_rv: 0.20       # US vs EU index spread
+  sector_rv: 0.20           # Factor-neutral sector pairs
+  europe_vol_convex: 0.18   # Primary insurance
+  credit_carry: 0.08        # NORMAL regime only
+  money_market: 0.34        # Short-term funds
 ```
 
 ### instruments.yaml
@@ -451,22 +451,11 @@ Hedge budget (2.5% NAV/year) allocated across:
 
 **Profit-Taking**: Sells 60% of ITM hedges when profitable. Alert triggered at 90% budget usage.
 
-## Stock Screening (Single Name Sleeve)
+## ~~Stock Screening~~ (REMOVED in v2.2)
 
-The `src/stock_screener.py` module implements quantitative stock selection:
-
-### US Longs (Quality Growth)
-Multi-factor scoring:
-- **Quality (50%)**: ROE > 15%, debt/equity < 1, positive earnings growth, strong FCF
-- **Momentum (30%)**: 12-month returns (excluding last month)
-- **Size (20%)**: Market cap > $50B, daily volume > $50M
-
-### EU Shorts (Zombies)
-- **Zombie Score (50%)**: Interest coverage < 3x, negative revenue growth, high debt
-- **Weakness (30%)**: Negative momentum vs Euro STOXX 50
-- **Sector (20%)**: Banks, Autos, Utilities, Industrials preferred
-
-**Rebalancing**: Monthly. Max 5% per single name. Fallback to AAPL, MSFT, GOOGL, NVDA, AMZN if screening fails.
+> **Note:** The Single Name sleeve and stock_screener.py were removed in Portfolio Simplification v2.2.
+> Ablation analysis showed -0.334 marginal Sharpe and -82% max drawdown.
+> See `docs/PORTFOLIO_SIMPLIFICATION.md` for details.
 
 ## Testing
 

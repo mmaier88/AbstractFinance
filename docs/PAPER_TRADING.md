@@ -35,17 +35,17 @@ This document tracks the 60-day paper trading burn-in period required before dep
 | FLOT | 20,000 | core_index_rv | USD |
 | LQDE | 370 | core_index_rv | USD |
 
-### Sleeve Weights
+### Sleeve Weights (Updated v2.2)
 
-| Sleeve | Target | Actual |
+| Sleeve | Target | Status |
 |--------|--------|--------|
-| core_index_rv | 50% | 75.6% |
-| sector_rv | 15% | 0% |
-| single_name | 15% | 0% |
-| credit_carry | 15% | 0% |
-| crisis_alpha | 5% | 0% |
+| core_index_rv | 20% | Active |
+| sector_rv | 20% | Active |
+| europe_vol_convex | 18% | Active (Primary Insurance) |
+| credit_carry | 8% | NORMAL Regime Only |
+| money_market | 34% | Active |
 
-**Note**: Only core_index_rv sleeve is active during paper trading Phase 1.
+**v2.2 Changes:** Removed single_name and crisis_alpha. See `docs/PORTFOLIO_SIMPLIFICATION.md`.
 
 ---
 

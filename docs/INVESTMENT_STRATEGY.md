@@ -2,7 +2,7 @@
 
 ## "Insurance for Europeans" - European Decline Macro Fund
 
-**Version:** 2.1 (Strategy Evolution - Full Implementation)
+**Version:** 2.2 (Portfolio Simplification)
 **Last Updated:** December 2025
 **Status:** Paper Trading (Staging)
 
@@ -106,22 +106,15 @@ This sleeve has **negative expected value** in normal times (options decay). But
 - VSTOXX rises more than VIX in EU-specific stress (Euro crisis 2011, EU energy crisis 2022)
 - VIX rises more in global stress—but we're not insuring against US problems
 
-### Why Crisis Alpha is Europe-Centric (60% EU / 25% US)
+### ~~Why Crisis Alpha is Europe-Centric~~ (MERGED in v2.2)
 
-**Old allocation:** ~50% VIX, ~50% SPY puts
+**v2.2 Update:** Crisis Alpha has been merged into Europe Vol Convexity. Ablation analysis showed:
+- crisis_alpha: -0.082 marginal Sharpe contribution
+- europe_vol_convex: +0.368 marginal Sharpe contribution
 
-**New allocation:** 60% Europe (VSTOXX 30%, SX5E 20%, EU banks 10%), 25% US (VIX 15%, SPY 10%)
+Both sleeves traded overlapping instruments (VSTOXX calls, SX5E puts). The europe_vol_convex sleeve has better signal timing via term structure and vol-of-vol detection. Merging eliminates redundant complexity while preserving the Europe-centric insurance function.
 
-**The reasoning:**
-
-If we're building "Insurance for Europeans," we need to ask: what are we insuring against?
-
-1. **EU banking crisis** → VSTOXX spikes, SX7E collapses, EUR weakens
-2. **EU sovereign crisis** → Bund/OAT spreads widen, VSTOXX spikes
-3. **EU energy crisis** → EUR weakens, European equities collapse
-4. **Global risk-off** → VIX spikes, all equities fall
-
-Three of these four scenarios are Europe-specific. The Crisis Alpha sleeve should reflect that. VIX calls are still useful (scenario 4), but they shouldn't dominate.
+The underlying thesis remains: we're insuring against European-specific scenarios (banking crisis, sovereign stress, energy shock), so our primary insurance channel should be VSTOXX and SX5E options, not VIX.
 
 ### Why Trend Filter Exists (Preventing Thesis Bleed)
 
@@ -130,7 +123,7 @@ Three of these four scenarios are Europe-specific. The Crisis Alpha sleeve shoul
 - Dollar weakness periods
 - European cyclical recoveries
 
-During these periods, all three equity sleeves (Core RV, Sector RV, Single Name) bleed. This is expected—but we don't want to bleed at full size.
+During these periods, equity sleeves (Core RV, Sector RV) bleed. This is expected—but we don't want to bleed at full size.
 
 **The solution:** Scale equity sleeve sizing based on 60-day US vs EU relative momentum:
 
@@ -174,12 +167,19 @@ FULL hedge mode (< 2% residual FX) removes this channel. We use PARTIAL (25% res
 
 **In CRISIS regime:** We switch to NO hedge (100% USD exposure). When Europe is in crisis, we want maximum USD payoff.
 
-### Why Cash Buffer is 10% (Not 0%)
+### Why Money Market is 34% (Not 0% or 10%)
 
-**Three purposes:**
-1. **Margin buffer:** Futures and options require margin. 10% cash prevents margin calls during vol spikes.
-2. **Dry powder:** In a crisis, we want capital to deploy into dislocated assets.
+**v2.2 Update:** Renamed from "Cash Buffer" and increased from 10% to 34%.
+
+**Key insight:** "Cash" should never be idle. We invest in short-term money market funds (~4-5% annual return) instead of leaving cash uninvested.
+
+**Four purposes:**
+1. **Margin buffer:** Futures and options require margin. Substantial buffer prevents margin calls during vol spikes.
+2. **Dry powder:** In a crisis, we have significant capital to deploy into dislocated assets.
 3. **Rebalancing liquidity:** Avoids forced selling during rebalances.
+4. **Return generation:** Money market funds earn ~4-5% vs 0% for idle cash.
+
+**Why 34%?** The ablation analysis revealed single_name (-0.334 marginal Sharpe) and crisis_alpha (-0.082 marginal Sharpe) were actively hurting performance. Capital from these removed sleeves, plus credit_carry reduction, is better allocated to money market earning 4-5% than to strategies with negative contribution.
 
 ---
 
@@ -199,18 +199,22 @@ The key insight: **Equity L/S alone won't reliably pay off in stress** because U
 
 ## Sleeve Breakdown
 
-### Current Allocation (Strategy Evolution v2.1)
+### Current Allocation (Portfolio Simplification v2.2)
 
 ```
 Sleeve Weights (% of NAV at full scaling):
-├── Core Index RV:       20%  (reduced from 35%)
+├── Core Index RV:       20%  (US vs EU index spread)
 ├── Sector RV:           20%  (factor-neutral same-sector pairs)
-├── Single Name L/S:     10%  (trend-gated)
-├── Credit & Carry:      15%  (regime-adaptive)
-├── Europe Vol Convex:   15%  (PRIMARY insurance)
-├── Crisis Alpha:        10%  (Europe-centric)
-└── Cash Buffer:         10%  (safety margin)
+├── Europe Vol Convex:   18%  (PRIMARY insurance - absorbs crisis_alpha)
+├── Credit & Carry:       8%  (NORMAL regime only)
+└── Money Market:        34%  (short-term funds, not idle cash)
 ```
+
+**v2.2 Changes (based on ablation analysis 2010-2024):**
+- **REMOVED single_name:** -0.334 marginal Sharpe, -82% max DD (stock picking doesn't work)
+- **REMOVED crisis_alpha:** Merged into europe_vol_convex (overlapping instruments)
+- **REDUCED credit_carry:** 15% → 8%, gated to NORMAL regime only (negative insurance score)
+- **INCREASED money_market:** 10% → 34% (invested in short-term funds, not idle)
 
 ### Sleeve Details
 
@@ -233,18 +237,15 @@ Matched sector pairs to isolate regional beta from style bets:
 - **Factor-Neutral:** Beta and value/growth exposure neutralized
 - **Trend-Gated:** Same filter as Core Index RV
 
-#### 3. Single Name L/S (10%)
-- **Long US:** Quality growth stocks (AAPL, MSFT, GOOGL, NVDA, etc.)
-- **Short EU:** "Zombie" companies with weak fundamentals
-- **Quantitative Screening:** Factor-based selection (Quality 50%, Momentum 30%, Size 20%)
-- **Trend-Gated:** Disabled when US/EU momentum very negative
-
-#### 4. Credit & Carry (15%)
+#### 3. Credit & Carry (8%) - NORMAL Regime Only
 - **Long US Credit:** IG (LQDE), HY (IHYU), Floating Rate (FLOT), BDCs (ARCC)
-- **Regime-Adaptive:** Reduced in ELEVATED/CRISIS regimes
-- **Carry Target:** ~7% annual from credit spread + financing
+- **NORMAL Regime Gate:** Only trades when regime == NORMAL (v2.2)
+- **Rationale:** -0.55 insurance score means credit loses money in stress periods
+- **Carry Target:** ~7% annual from credit spread + financing (when active)
 
-#### 5. Europe Vol Convexity (15%) - PRIMARY Insurance
+**v2.2 Change:** Reduced from 15% to 8% and gated to NORMAL regime only. Ablation showed +0.023 marginal Sharpe but -0.55 insurance score - the sleeve hurts performance during the exact periods we need protection.
+
+#### 4. Europe Vol Convexity (18%) - PRIMARY Insurance
 Primary insurance channel using VSTOXX and SX5E structures:
 
 | Structure | Allocation | Description |
@@ -267,22 +268,40 @@ Primary insurance channel using VSTOXX and SX5E structures:
 - **Upward jump:** Monetize 30% of winners
 - **Downward jump:** Add 20% on weakness (vol cheap)
 
-#### 6. Crisis Alpha (10%)
-Secondary insurance (Europe-centric):
+#### 5. Money Market (34%)
+**v2.2 Change:** Renamed from "Cash Buffer" and increased from 10% to 34%.
 
-| Hedge Type | Allocation | Instrument |
-|------------|------------|------------|
-| VSTOXX Calls | 30% | FVS options (EUREX) |
-| SX5E Puts | 20% | Euro STOXX 50 options |
-| EU Bank Puts | 10% | SX7E options |
-| VIX Calls | 15% | VIX index options |
-| SPY Puts | 10% | S&P 500 ETF options |
-| Sovereign Spread | 10% | Short FOAT / Long FGBL |
+- **NOT idle cash:** Invested in short-term money market funds
+- **Purpose 1:** Margin buffer for futures/options positions
+- **Purpose 2:** Dry powder for crisis deployment
+- **Purpose 3:** Generates ~4-5% annual return (vs 0% for idle cash)
+- **Liquidity:** T+1 redemption for deployment
 
-#### 7. Cash Buffer (10%)
-- Margin for futures positions
-- Dry powder for crisis deployment
-- Financing cost optimization
+**Why 34%?** Capital freed from removing single_name (10%) and crisis_alpha (10%), plus reducing credit_carry (7%), redirected here. With 66% in active strategies and 34% in money market, the portfolio has substantial dry powder while still earning returns.
+
+---
+
+### Removed Sleeves (v2.2)
+
+#### ~~Single Name L/S~~ (REMOVED)
+**Ablation Results:** -0.334 marginal Sharpe, -82% max drawdown, -4.64 insurance score
+
+**Why it failed:**
+- Stock screening (quality/momentum/zombie) doesn't reliably generate alpha
+- Individual stock variance overwhelms the signal
+- Short EU "zombies" requires difficult stock borrow
+- High execution costs on individual names
+
+**Code removed:** `stock_screener.py` (589 lines)
+
+#### ~~Crisis Alpha~~ (MERGED into Europe Vol Convex)
+**Ablation Results:** -0.082 marginal Sharpe vs europe_vol_convex's +0.368
+
+**Why merged:**
+- Both sleeves traded overlapping instruments (VSTOXX, SX5E options)
+- Crisis_alpha was a "shell" managed by TailHedgeManager
+- Europe_vol_convex has better signal timing (term structure, vol-of-vol)
+- Consolidation reduces complexity without losing functionality
 
 ---
 
@@ -508,15 +527,14 @@ vol_target_annual: 0.12
 gross_leverage_max: 2.0
 max_drawdown_pct: 0.10
 
-# Sleeve Weights (Strategy Evolution v2.1)
+# Sleeve Weights (Portfolio Simplification v2.2)
 sleeves:
-  core_index_rv: 0.20
-  sector_rv: 0.20
-  single_name: 0.10
-  credit_carry: 0.15
-  europe_vol_convex: 0.15
-  crisis_alpha: 0.10
-  cash_buffer: 0.10
+  core_index_rv: 0.20       # US vs EU index spread
+  sector_rv: 0.20           # Factor-neutral sector pairs
+  europe_vol_convex: 0.18   # Primary insurance (absorbed crisis_alpha)
+  credit_carry: 0.08        # NORMAL regime only
+  money_market: 0.34        # Short-term funds (not idle cash)
+  # REMOVED: single_name, crisis_alpha, cash_buffer
 
 # Trend Filter
 trend_filter:
@@ -642,7 +660,8 @@ AbstractFinance/
 | 1.1 | Dec 2025 | ENGINE_FIX_PLAN (FX, risk scaling, reconciliation) |
 | 1.2 | Dec 2025 | Execution Stack Upgrade (slippage, cost gating) |
 | 2.0 | Dec 2025 | Strategy Evolution (Europe-centric, trend filter, vol convexity) |
-| **2.1** | Dec 2025 | **Full Implementation** (term structure, vol-of-vol, sector pairs) |
+| 2.1 | Dec 2025 | Full Implementation (term structure, vol-of-vol, sector pairs) |
+| **2.2** | Dec 2025 | **Portfolio Simplification** (removed single_name, merged crisis_alpha, NORMAL regime gate for credit) |
 
 ---
 

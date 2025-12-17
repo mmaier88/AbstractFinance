@@ -276,40 +276,21 @@ def construct_core_index_rv(nav, scaling_factor, data_feed):
 - `EXS1` - Core DAX UCITS
 - `IUKD` - UK Dividend UCITS
 
-### Sleeve 3: Single Name (15%)
+### ~~Sleeve 3: Single Name~~ (REMOVED in v2.2)
 
-**Thesis:** Factor-based stock selection
+> **Removed:** Single Name sleeve was removed in Portfolio Simplification v2.2.
+> Ablation analysis showed -0.334 marginal Sharpe and -82% max drawdown.
+> Stock screening (quality/momentum/zombie) didn't reliably generate alpha.
+> See `docs/PORTFOLIO_SIMPLIFICATION.md` for details.
 
-```python
-def construct_single_name(nav, scaling_factor, stock_screener):
-    sleeve_notional = nav * 0.15 * scaling_factor
-
-    # US LONGS: Quality + Momentum + Size factors
-    us_longs = stock_screener.screen_us_longs(
-        quality_weight=0.50,
-        momentum_weight=0.30,
-        size_weight=0.20,
-        top_n=10
-    )
-
-    # EU SHORTS: Zombie + Weakness + Sector factors
-    eu_shorts = stock_screener.screen_eu_shorts(
-        zombie_weight=0.50,
-        weakness_weight=0.30,
-        sector_weight=0.20,
-        top_n=10
-    )
-
-    # Fallback if screening fails
-    if not us_longs:
-        us_longs = ["AAPL", "MSFT", "GOOGL", "NVDA", "AMZN"]
-    if not eu_shorts:
-        eu_shorts = ["EXV1"]  # EU Financials ETF
-```
-
-### Sleeve 4: Credit & Carry (15%)
+### Sleeve 3: Credit & Carry (8%) - NORMAL Regime Only
 
 **Thesis:** Harvest credit risk premium
+
+**v2.2 Changes:**
+- Reduced from 15% to 8%
+- **NORMAL Regime Gate:** Only trades when regime == NORMAL
+- Rationale: -0.55 insurance score (loses money in stress periods)
 
 **Allocation:**
 - 40% `LQDE` - iShares $ Corp Bond UCITS (IG)
@@ -317,18 +298,35 @@ def construct_single_name(nav, scaling_factor, stock_screener):
 - 20% `FLOT` - iShares Floating Rate UCITS
 - 15% `ARCC` - Ares Capital (BDC, individual stock)
 
-### Sleeve 5: Crisis Alpha (5%)
+### Sleeve 4: Europe Vol Convexity (18%) - PRIMARY Insurance
 
-**Thesis:** Tail hedge protection
+**Thesis:** Convex tail hedge protection via European volatility structures
+
+**v2.2 Changes:**
+- Increased from 15% to 18%
+- Absorbed crisis_alpha instruments (overlapping)
+- +0.368 marginal Sharpe, +4.24 insurance score (best performer)
 
 **Budget:** 2.5% of NAV annually for option premiums
 
-**Hedge Types:**
-- 40% - Equity puts (SPX/SPY/SX5E)
-- 20% - VIX calls
-- 15% - Credit puts (HYG/JNK)
-- 15% - Sovereign spreads (OAT-Bund)
-- 10% - Bank puts (French banks)
+**Allocation (Europe-Centric):**
+- 50% - VSTOXX Call Spreads (FVS options on EUREX)
+- 35% - SX5E Put Spreads (Euro STOXX 50)
+- 15% - EU Banks Puts (SX7E or EXV1)
+
+**Signals:**
+- Term Structure: Contango = cheap vol, add size
+- Vol-of-Vol: Large V2X moves trigger monetization/re-entry
+
+### Sleeve 5: Money Market (34%)
+
+**v2.2 Changes:** Renamed from "Cash Buffer", increased from 10% to 34%
+
+**Purpose:**
+- Short-term money market funds (NOT idle cash)
+- Margin buffer for futures/options
+- Dry powder for crisis deployment
+- Earns ~4-5% annual (vs 0% for idle cash)
 
 ---
 
@@ -1391,14 +1389,13 @@ gross_leverage_max: 2.0
 net_leverage_max: 1.0
 max_drawdown_pct: 0.10
 
-# Sleeves
+# Sleeves (Portfolio Simplification v2.2)
 sleeves:
-  core_index_rv: 0.35
-  sector_rv: 0.25
-  single_name: 0.15
-  credit_carry: 0.15
-  crisis_alpha: 0.05
-  cash_buffer: 0.05
+  core_index_rv: 0.20       # US vs EU index spread
+  sector_rv: 0.20           # Factor-neutral sector pairs
+  europe_vol_convex: 0.18   # Primary insurance
+  credit_carry: 0.08        # NORMAL regime only
+  money_market: 0.34        # Short-term funds
 
 # Momentum
 momentum:
