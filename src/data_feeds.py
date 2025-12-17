@@ -13,7 +13,7 @@ import yfinance as yf
 from pathlib import Path
 
 try:
-    from ib_insync import IB, Contract, Stock, Future, Forex, Option, util
+    from ib_insync import IB, Contract, Stock, Future, Forex, Option, Index, util
     IB_AVAILABLE = True
 except ImportError:
     IB_AVAILABLE = False
@@ -104,6 +104,17 @@ class DataFeed:
         "FGBL": "^TNX",
         "FOAT": "^TNX",
         "FBTP": "^TNX",
+
+        # VSTOXX / V2X - European volatility
+        "FVS": "^V2X",      # VSTOXX Mini Futures -> V2X index
+        "V2X": "^V2X",      # V2X index
+        "ESTX50": "^STOXX50E",  # Euro STOXX 50 Index
+
+        # Option hedge placeholders - use underlying indices for pricing
+        "vstoxx_call": "^V2X",   # VSTOXX calls -> V2X index
+        "sx5e_put": "^STOXX50E", # SX5E puts -> Euro STOXX 50
+        "vix_call": "^VIX",      # VIX calls -> VIX index
+        "eu_bank_put": "^SX7E",  # EU bank puts -> SX7E (may not exist on YF)
     }
 
     def __init__(
@@ -199,6 +210,21 @@ class DataFeed:
             return Future(spec.symbol, exchange=spec.exchange, lastTradeDateOrContractMonth=expiry)
         elif spec.sec_type == "CASH":
             return Forex(spec.symbol + spec.currency)
+        elif spec.sec_type == "IND":
+            # Index contracts for price data
+            # IBKR uses Index class with specific symbols
+            # Map common indices to IBKR symbols
+            index_map = {
+                "VIX": ("VIX", "CBOE"),
+                "V2X": ("V2X", "EUREX"),
+                "ESTX50": ("ESTX50", "EUREX"),
+                "SX5E": ("ESTX50", "EUREX"),  # Euro STOXX 50
+                "SX7E": ("SX7E", "EUREX"),    # Euro STOXX Banks
+            }
+            if spec.symbol in index_map:
+                ib_symbol, exchange = index_map[spec.symbol]
+                return Index(ib_symbol, exchange, spec.currency)
+            return Index(spec.symbol, spec.exchange, spec.currency)
         elif spec.sec_type == "OPT":
             # Options require more parameters
             return None  # Handle separately

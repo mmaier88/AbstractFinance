@@ -427,6 +427,50 @@ volatility:
     # Typical DTE: 30-90 days
     # Preferred structures: Call spreads (buy +5pt OTM, sell +15pt)
 
+# Option hedge placeholders - used by TailHedgeManager for abstract option orders
+# These are resolved to underlying prices for sizing calculations
+# Actual option contracts are created at execution time with specific strikes/expiries
+option_hedges:
+  vstoxx_call:
+    symbol: "FVS"               # VSTOXX Mini Futures (underlying for pricing)
+    exchange: "EUREX"
+    sec_type: "FUT"             # Get future price for option sizing
+    currency: "EUR"
+    multiplier: 100.0
+    underlying_index: "V2X"
+    option_type: "CALL"
+    description: "VSTOXX Call Option placeholder - prices via FVS futures"
+
+  sx5e_put:
+    symbol: "ESTX50"            # Euro STOXX 50 Index
+    exchange: "EUREX"
+    sec_type: "IND"             # Index for pricing
+    currency: "EUR"
+    multiplier: 10.0
+    underlying_index: "SX5E"
+    option_type: "PUT"
+    description: "SX5E Put Option placeholder - prices via Euro STOXX 50 index"
+
+  vix_call:
+    symbol: "VIX"               # VIX Index
+    exchange: "CBOE"
+    sec_type: "IND"             # Index for pricing
+    currency: "USD"
+    multiplier: 100.0
+    underlying_index: "VIX"
+    option_type: "CALL"
+    description: "VIX Call Option placeholder - prices via VIX index"
+
+  eu_bank_put:
+    symbol: "SX7E"              # Euro STOXX Banks Index
+    exchange: "EUREX"
+    sec_type: "IND"             # Index for pricing
+    currency: "EUR"
+    multiplier: 10.0
+    underlying_index: "SX7E"
+    option_type: "PUT"
+    description: "EU Banks Put Option placeholder - prices via SX7E index"
+
 europe_vol_structures:
   # EURO STOXX 50 Options (OESX) - PRIMARY for Europe insurance puts
   # Contract specs: EUR 10 per index point, European-style, cash-settled
