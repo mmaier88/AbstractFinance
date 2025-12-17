@@ -197,6 +197,30 @@ Several instruments show "market data not subscribed" errors:
 
 ---
 
+## Market Data Improvements Roadmap
+
+See `CLAUDE.md` for full implementation details with code examples.
+
+| Issue | Priority | Summary | Location |
+|-------|----------|---------|----------|
+| 1. GBP/Pence | **High** | Use ETF whitelist instead of price > 100 heuristic | `data_feeds.py:307-313` |
+| 2. Blocking sleep | Medium | Pre-subscribe or batch fetch with single wait | `data_feeds.py:299-300` |
+| 3. Silent exceptions | **High** | Replace `except: pass` with debug logging | `data_feeds.py:314-315, 330-331` |
+| 4. Sequential fetch | Medium | Batch `get_snapshots()` requests | `marketdata/live.py:127-130` |
+| 5. Circuit breaker | Low | Back off after consecutive failures | New utility |
+| 6. Data metrics | Low | Track success rates, latency, rejections | New module |
+
+### Recommended Implementation Order
+
+1. **Issue 3** (silent exceptions) - Quick fix, immediate debugging benefit
+2. **Issue 1** (GBP/pence) - High risk of wrong prices affecting portfolio valuation
+3. **Issue 2** (blocking sleep) - Performance: 20 instruments = 20 seconds currently
+4. **Issue 4** (batch fetch) - Performance improvement for multi-instrument requests
+5. **Issue 5** (circuit breaker) - Resilience against flaky IBKR connection
+6. **Issue 6** (metrics) - Observability for production monitoring
+
+---
+
 ## Execution Flow Summary
 
 1. **Connect to IBKR** (clientId 1 for execution, 2 for data feed)
