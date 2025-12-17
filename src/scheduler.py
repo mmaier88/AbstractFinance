@@ -359,7 +359,7 @@ class DailyScheduler:
                         """Record completed order in analytics and log."""
                         # Record in ExecutionAnalytics for reporting
                         if self.execution_analytics:
-                            asset_class = self._get_asset_class(result.intent.instrument_id)
+                            asset_class = self._get_asset_class(result.ticket.intent.instrument_id)
                             self.execution_analytics.record_order_complete(
                                 result=result,
                                 asset_class=asset_class,
@@ -369,9 +369,9 @@ class DailyScheduler:
                         self.logger.logger.info(
                             "order_complete",
                             extra={
-                                "instrument_id": result.intent.instrument_id,
+                                "instrument_id": result.ticket.intent.instrument_id,
                                 "status": result.status.value,
-                                "filled_qty": result.filled_qty,
+                                "filled_qty": result.fill_qty,
                                 "slippage_bps": result.slippage_bps,
                                 "commission": result.commission,
                             }
