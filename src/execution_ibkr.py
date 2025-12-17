@@ -146,8 +146,8 @@ class IBClient:
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
 
-        # Wire up disconnect event handler
-        self.ib.disconnectedEvent += self._on_disconnect
+        # Wire up disconnect event handler (use lambda to ensure proper binding)
+        self.ib.disconnectedEvent += lambda: self._on_disconnect()
 
     def connect(self) -> bool:
         """
