@@ -366,12 +366,16 @@ class PortfolioState:
         total_nav = cash_in_base_ccy(self.cash_by_ccy, fx_rates)
 
         for inst_id, position in self.positions.items():
-            try:
-                current_price = data_feed.get_last_price(inst_id)
-                position.market_price = current_price
-            except Exception:
-                # Use last known price - don't skip the position
-                pass
+            # Only fetch price from data_feed if we don't have one from IB
+            # IB prices are authoritative - Yahoo Finance can be wrong
+            # (e.g., UK stocks may be in pence instead of pounds)
+            if position.market_price == 0:
+                try:
+                    current_price = data_feed.get_last_price(inst_id)
+                    position.market_price = current_price
+                except Exception:
+                    # Use last known price - don't skip the position
+                    pass
 
             # Use position_nav_value for correct NAV calculation
             # This handles futures correctly (P&L only, not notional)
