@@ -1125,6 +1125,7 @@ class DailyScheduler:
                 instrument_id=order.instrument_id,
                 side=order.side,
                 quantity=int(abs(order.quantity)),
+                reason=getattr(order, 'reason', 'rebalance'),
                 sleeve=getattr(order, 'sleeve', 'unknown'),
                 urgency="normal",
             )
@@ -1142,6 +1143,7 @@ class DailyScheduler:
                         instrument_id=net_pos.instrument_id,
                         side="BUY" if net_pos.net_quantity > 0 else "SELL",
                         quantity=abs(net_pos.net_quantity),
+                        reason="rebalance",
                         sleeve="netted",
                         urgency="normal",
                     ))
