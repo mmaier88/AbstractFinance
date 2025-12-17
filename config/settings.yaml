@@ -25,7 +25,7 @@ fx:
 
 # Phase 3: Broker Reconciliation Circuit Breaker
 reconciliation:
-  halt_threshold_pct: 0.0025     # 0.25% difference triggers HALT
+  halt_threshold_pct: 0.005      # 0.5% difference triggers HALT
   emergency_threshold_pct: 0.01  # 1% difference triggers EMERGENCY
   enabled: true                  # Enable reconciliation checks
 

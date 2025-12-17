@@ -331,18 +331,54 @@ class AlertManager:
                     message=f"Failed to initialize email: {e}"
                 )
 
-    def send_alert(self, alert: Alert) -> Dict[str, bool]:
+    def send_alert(
+        self,
+        alert: Optional[Alert] = None,
+        *,
+        alert_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        message: Optional[str] = None,
+        title: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, bool]:
         """
         Send alert through all configured channels.
 
         Args:
-            alert: Alert to send
+            alert: Alert object to send (if provided, other args ignored)
+            alert_type: Alert type string (used if alert not provided)
+            severity: Severity string (used if alert not provided)
+            message: Alert message (used if alert not provided)
+            title: Alert title (used if alert not provided)
+            **kwargs: Additional metadata
 
         Returns:
             Dict mapping channel to success status
         """
         if not self.enabled:
             return {}
+
+        # Handle both Alert objects and keyword arguments
+        if alert is None:
+            # Build Alert from keyword arguments
+            try:
+                at = AlertType(alert_type) if alert_type else AlertType.DAILY_SUMMARY
+            except ValueError:
+                at = AlertType.DAILY_SUMMARY
+
+            try:
+                sev = AlertSeverity(severity) if severity else AlertSeverity.INFO
+            except ValueError:
+                sev = AlertSeverity.INFO
+
+            alert = Alert(
+                alert_type=at,
+                severity=sev,
+                title=title or f"{alert_type or 'Alert'} - {severity or 'info'}",
+                message=message or "",
+                timestamp=datetime.utcnow(),
+                metadata=kwargs if kwargs else None
+            )
 
         results = {}
 
