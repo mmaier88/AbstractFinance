@@ -603,6 +603,43 @@ This computes everything (NAV, risk, targets, orders) but does not submit to IBK
 
 ---
 
+### 18. Burn-In Protection: Crisis Override Fix (December 18, 2025)
+
+**Symptom:** Despite vol burn-in computing scaling=1.0, positions were still liquidated with scaling=0.3
+
+**Root Cause:** The burn-in clamps (0.80-1.25) only applied to `vol_scaling`, NOT the final scaling. Crisis regime override was winning:
+
+```python
+# BEFORE: Burn-in clamped vol_scaling, but crisis still won
+vol_scaling = 1.0  # From burn-in
+state_scaling = 0.3  # Crisis regime
+scaling_factor = min(vol_scaling, state_scaling)  # = 0.3 ← CRISIS WINS
+```
+
+**Fix:** Apply clamps to FINAL scaling during burn-in period:
+
+```python
+# AFTER: Burn-in clamps final scaling too
+scaling_factor = min(vol_scaling, state_scaling)  # = 0.3
+
+if burn_in_active:
+    scaling_factor = np.clip(scaling_factor, 0.80, 1.25)  # = 0.80
+```
+
+**Result:**
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Burn-in + Crisis | scaling = 0.3 (liquidate) | scaling = 0.80 (protect) |
+| Burn-in + Normal | scaling = 1.0 | scaling = 1.0 |
+| Post burn-in + Crisis | scaling = 0.3 | scaling = 0.3 (as designed) |
+
+**File:** `src/risk_engine.py:920-931`
+
+**Key Insight:** The burn-in period (first 60 days) should protect legacy positions from ALL aggressive scaling, including crisis regime. After burn-in, crisis regime can properly de-risk.
+
+---
+
 ## Position Sync Fix (December 18, 2025)
 
 ### 17. NAV Reconciliation: Phantom Positions
