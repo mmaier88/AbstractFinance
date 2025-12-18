@@ -46,7 +46,8 @@ class ExecutionConfig:
     max_replace_attempts: int = 6
 
     # Slippage / collars (bps)
-    default_max_slippage_bps: float = 10.0
+    # 25bps default ensures fills while still providing flash-crash protection
+    default_max_slippage_bps: float = 25.0
     max_slippage_bps_by_asset_class: Dict[str, float] = None
 
     # Turnover control
@@ -72,11 +73,13 @@ class ExecutionConfig:
 
     def __post_init__(self):
         if self.max_slippage_bps_by_asset_class is None:
+            # 25bps for liquid ETFs/stocks ensures fills with flash-crash protection
+            # Tighter for futures (more liquid, lower spreads)
             self.max_slippage_bps_by_asset_class = {
-                "ETF": 10.0,
-                "STK": 12.0,
-                "FUT": 3.0,
-                "FX_FUT": 2.0,
+                "ETF": 25.0,
+                "STK": 30.0,
+                "FUT": 5.0,
+                "FX_FUT": 3.0,
             }
         if isinstance(self.default_policy, str):
             self.default_policy = PolicyMode(self.default_policy)
