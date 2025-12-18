@@ -36,6 +36,25 @@ volatility:
   ewma_weight: 0.10              # 10% weight on new observation (decay)
   lookback_days: 20              # Days for realized vol calculation
 
+# ============================================================================
+# Vol Burn-In Prior (prevents day-0 deleveraging to cash)
+# ============================================================================
+vol_burn_in:
+  burn_in_days: 60               # Days until full realized vol is used
+  initial_vol_annual: 0.10       # Prior vol during burn-in (10%)
+  min_vol_annual: 0.06           # Hard floor on effective vol (6%)
+
+# Scaling Factor Clamps (prevents extreme scaling)
+scaling_clamps:
+  min_scaling_factor: 0.80       # Never scale below 80% of target
+  max_scaling_factor: 1.25       # Never scale above 125% of target
+
+# Legacy Unwind Glidepath (gradual transition from initial positions)
+legacy_unwind:
+  enabled: true                  # Enable glidepath blending
+  unwind_days: 10                # Days to converge from initial to target
+  snapshot_file: "state/portfolio_init.json"  # Where to store initial snapshot
+
 # Phase 7: Regime Hysteresis
 hysteresis:
   persistence_days: 3            # Days regime must persist before change

@@ -126,27 +126,94 @@ class TestScalingFactor:
     def test_compute_scaling_factor_normal(self, risk_engine):
         """Test scaling factor under normal conditions."""
         # Realized vol = 8%, target = 12%
-        # Should scale up by 1.5x
-        factor = risk_engine.compute_scaling_factor(0.08)
-        assert abs(factor - 1.5) < 0.01
+        # Should scale up by 1.5x but clamped to max 1.25
+        factor, diag = risk_engine.compute_scaling_factor(0.08, history_days=100)
+        assert abs(factor - 1.25) < 0.01  # Clamped to max_scaling_factor
 
     def test_compute_scaling_factor_high_vol(self, risk_engine):
-        """Test scaling factor caps at max leverage."""
-        # Realized vol = 4%, target = 12%
-        # Raw factor would be 3.0, but capped at 2.0
-        factor = risk_engine.compute_scaling_factor(0.04)
-        assert factor == 2.0
+        """Test scaling factor with high vol."""
+        # Realized vol = 24%, target = 12%
+        # Raw factor would be 0.5, but clamped to min 0.80
+        factor, diag = risk_engine.compute_scaling_factor(0.24, history_days=100)
+        assert abs(factor - 0.80) < 0.01  # Clamped to min_scaling_factor
 
     def test_compute_scaling_factor_low_vol(self, risk_engine):
         """Test scaling factor with very low vol."""
-        # Very low vol should result in max leverage
-        factor = risk_engine.compute_scaling_factor(0.01)
-        assert factor == 2.0  # Capped at max
+        # Very low vol should be floored, then clamped
+        factor, diag = risk_engine.compute_scaling_factor(0.01, history_days=100)
+        assert factor == 1.25  # Clamped at max_scaling_factor
 
     def test_compute_scaling_factor_zero_vol(self, risk_engine):
         """Test scaling factor with zero vol."""
-        factor = risk_engine.compute_scaling_factor(0.0)
-        assert factor == 1.0
+        # Zero vol should use burn-in prior (0.10) and then compute
+        factor, diag = risk_engine.compute_scaling_factor(0.0, history_days=0)
+        # target 0.12 / effective 0.10 = 1.2, within clamps
+        assert abs(factor - 1.2) < 0.01
+
+    def test_compute_scaling_factor_returns_diagnostics(self, risk_engine):
+        """Test that scaling factor returns useful diagnostics."""
+        factor, diag = risk_engine.compute_scaling_factor(0.10, history_days=30)
+        assert 'history_days' in diag
+        assert 'effective_vol' in diag
+        assert 'raw_scaling' in diag
+        assert 'clamped_scaling' in diag
+        assert 'burn_in_active' in diag
+        assert diag['history_days'] == 30
+        assert diag['burn_in_active'] == True  # 30 < 60 default burn-in days
+
+
+class TestVolBurnIn:
+    """Tests for volatility burn-in prior."""
+
+    def test_effective_vol_during_burnin(self, risk_engine):
+        """Test that burn-in prior is used when history is short."""
+        # With only 10 days of history and 0 realized vol,
+        # should use initial_vol_annual (0.10)
+        eff_vol, burn_in_active, diag = risk_engine.effective_realized_vol(0.0, 10)
+        assert burn_in_active == True  # Use == for bool compatibility
+        assert eff_vol == 0.10  # initial_vol_annual default
+
+    def test_effective_vol_after_burnin(self, risk_engine):
+        """Test that realized vol is used after burn-in period."""
+        # With 100 days of history, should use realized vol (floored to min)
+        eff_vol, burn_in_active, diag = risk_engine.effective_realized_vol(0.05, 100)
+        assert burn_in_active == False  # Use == for bool compatibility
+        assert eff_vol == 0.06  # min_vol_annual default
+
+    def test_effective_vol_uses_max_of_realized_and_prior(self, risk_engine):
+        """Test burn-in takes max of realized and prior."""
+        # During burn-in with realized vol higher than prior
+        eff_vol, burn_in_active, diag = risk_engine.effective_realized_vol(0.15, 30)
+        assert burn_in_active == True  # Use == for bool compatibility
+        assert eff_vol == 0.15  # max(0.15, 0.10) = 0.15
+
+
+class TestScalingClamps:
+    """Tests for scaling factor clamping."""
+
+    def test_min_clamp_applied(self, risk_engine):
+        """Test that minimum scaling clamp is applied."""
+        # Very high vol -> low raw scaling -> clamped to min
+        factor, diag = risk_engine.compute_scaling_factor(0.30, history_days=100)
+        # target 0.12 / vol 0.30 = 0.40, clamped to 0.80
+        assert factor == 0.80
+        assert diag['clamp_applied'] == True  # Use == for numpy bool compatibility
+
+    def test_max_clamp_applied(self, risk_engine):
+        """Test that maximum scaling clamp is applied."""
+        # Very low vol -> high raw scaling -> clamped to max
+        factor, diag = risk_engine.compute_scaling_factor(0.06, history_days=100)
+        # target 0.12 / vol 0.08 (floor) = 1.5, clamped to 1.25
+        assert factor == 1.25
+        assert diag['clamp_applied'] == True  # Use == for numpy bool compatibility
+
+    def test_no_clamp_when_within_bounds(self, risk_engine):
+        """Test no clamp when scaling is within bounds."""
+        # Vol that produces scaling near 1.0
+        factor, diag = risk_engine.compute_scaling_factor(0.12, history_days=100)
+        # target 0.12 / vol 0.12 = 1.0, within [0.80, 1.25]
+        assert abs(factor - 1.0) < 0.01
+        assert diag['clamp_applied'] == False  # Use == for numpy bool compatibility
 
 
 class TestVaR:

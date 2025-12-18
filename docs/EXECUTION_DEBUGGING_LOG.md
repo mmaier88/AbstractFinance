@@ -493,6 +493,119 @@ def order_by_priority(self, net_positions):
 
 ---
 
+## Vol Burn-In and Legacy Unwind (December 18, 2025)
+
+### Problem: Day-0 Deleveraging to Cash
+
+After fixing the execution bugs, we observed the portfolio moved from ~320% gross exposure to ~20% (mostly cash). Investigation revealed:
+
+1. **`realized_vol: 0.0`** - No historical returns available on first run
+2. **`scaling_factor: 0.577`** - Computed as target_vol / blended_vol
+3. The risk engine was **working as designed** but too aggressive with no history
+
+The engine correctly identified legacy positions as overweight and deleveraged, but the lack of volatility history caused it to use an unfavorable vol estimate.
+
+### Solution: Three-Part Fix
+
+#### 1. Vol Burn-In Prior
+
+During the burn-in period (first 60 days), use a prior volatility estimate instead of computed realized vol:
+
+```yaml
+# config/settings.yaml
+vol_burn_in:
+  burn_in_days: 60         # Days until full realized vol is used
+  initial_vol_annual: 0.10 # Prior vol during burn-in (10%)
+  min_vol_annual: 0.06     # Hard floor on effective vol (6%)
+```
+
+**Logic:** `effective_vol = max(realized_vol, initial_vol_prior)` during burn-in
+
+**File:** `src/risk_engine.py:effective_realized_vol()`
+
+#### 2. Scaling Factor Clamps
+
+Prevent extreme position scaling by clamping the scaling factor:
+
+```yaml
+# config/settings.yaml
+scaling_clamps:
+  min_scaling_factor: 0.80  # Never scale below 80% of target
+  max_scaling_factor: 1.25  # Never scale above 125% of target
+```
+
+**Effect:** Even with volatile conditions, positions stay within 80-125% of target weights.
+
+**File:** `src/risk_engine.py:compute_scaling_factor()`
+
+#### 3. Legacy Unwind Glidepath
+
+Gradually transition from initial (legacy) positions to strategy targets over N days:
+
+```yaml
+# config/settings.yaml
+legacy_unwind:
+  enabled: true
+  unwind_days: 10                           # Days to converge
+  snapshot_file: "state/portfolio_init.json" # Initial positions
+```
+
+**Logic:**
+- **Day 0 (first run):** Save current IB positions as `portfolio_init.json`
+- **Days 1-10:** Blend targets with initial positions using alpha = day/unwind_days
+- **Day 11+:** Use pure strategy targets (alpha = 1.0)
+
+**Formula:** `blended[i] = alpha * target[i] + (1 - alpha) * initial[i]`
+
+**File:** `src/legacy_unwind.py`
+
+### Decision Logging
+
+Each run now logs scaling diagnostics:
+
+```
+scaling_diagnostics:
+  history_days: 0
+  raw_realized_vol: 0.0
+  effective_vol: 0.10      # Used burn-in prior
+  burn_in_active: true
+  raw_scaling: 1.2
+  clamped_scaling: 1.2     # Within [0.80, 1.25]
+  clamp_applied: false
+```
+
+### Dry-Run Mode
+
+Test the system without executing orders:
+
+```bash
+python -m src.scheduler --dry-run
+```
+
+This computes everything (NAV, risk, targets, orders) but does not submit to IBKR.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config/settings.yaml` | Added `vol_burn_in`, `scaling_clamps`, `legacy_unwind` sections |
+| `src/risk_engine.py` | Added `effective_realized_vol()`, updated `compute_scaling_factor()` with clamps |
+| `src/legacy_unwind.py` | NEW - Glidepath implementation |
+| `src/scheduler.py` | Integrated glidepath, added decision logging, `--dry-run` flag |
+| `tests/test_risk_engine.py` | Added tests for burn-in and clamps |
+| `tests/test_legacy_unwind.py` | NEW - 18 tests for glidepath logic |
+
+### Expected Behavior After Fix
+
+| Scenario | Before Fix | After Fix |
+|----------|-----------|-----------|
+| Day 0, no history | scaling=0.57, deleverage to cash | scaling=1.2, positions stable |
+| High vol (24%) | scaling=0.5, panic sell | scaling=0.8 (clamped), gradual reduction |
+| Low vol (4%) | scaling=3.0, over-leverage | scaling=1.25 (clamped), modest increase |
+| Legacy positions | Immediate rebalance | 10-day glidepath blend |
+
+---
+
 ## Commands for Debugging
 
 ```bash

@@ -50,10 +50,12 @@ class RiskDecision:
     increase_hedges: bool = False
     close_positions: List[str] = None
     warnings: List[str] = None
+    scaling_diagnostics: Dict[str, Any] = None  # Vol burn-in + scaling clamp diagnostics
 
     def __post_init__(self):
         self.close_positions = self.close_positions or []
         self.warnings = self.warnings or []
+        self.scaling_diagnostics = self.scaling_diagnostics or {}
 
 
 @dataclass
@@ -111,6 +113,17 @@ class RiskEngine:
         self.vol_floor = vol_settings.get('floor', 0.08)  # 8% minimum vol assumption
         self.ewma_span = vol_settings.get('ewma_span', 20)  # EWMA span for vol calc
         self.vol_blend_weight = vol_settings.get('blend_weight', 0.7)  # 70% EWMA, 30% rolling
+
+        # Vol Burn-In Prior settings (prevents day-0 deleveraging)
+        burn_in_settings = settings.get('vol_burn_in', {})
+        self.burn_in_days = burn_in_settings.get('burn_in_days', 60)
+        self.initial_vol_annual = burn_in_settings.get('initial_vol_annual', 0.10)
+        self.min_vol_annual = burn_in_settings.get('min_vol_annual', 0.06)
+
+        # Scaling Factor Clamps (prevents extreme scaling)
+        clamp_settings = settings.get('scaling_clamps', {})
+        self.min_scaling_factor = clamp_settings.get('min_scaling_factor', 0.80)
+        self.max_scaling_factor = clamp_settings.get('max_scaling_factor', 1.25)
 
         # Momentum settings
         momentum_settings = settings.get('momentum', {})
@@ -261,8 +274,9 @@ class RiskEngine:
         self,
         realized_vol_annual: float,
         target_vol_annual: Optional[float] = None,
-        gross_leverage_max: Optional[float] = None
-    ) -> float:
+        gross_leverage_max: Optional[float] = None,
+        history_days: Optional[int] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
         """
         Compute position scaling factor for volatility targeting.
 
@@ -271,34 +285,68 @@ class RiskEngine:
         - Allow scaling > 1.0 (levering up in low vol)
         - Clip to max leverage
 
+        Vol Burn-In + Scaling Clamps:
+        - Uses effective_realized_vol() with burn-in prior
+        - Clamps raw scaling to [min_scaling_factor, max_scaling_factor]
+        - Returns diagnostics for decision logging
+
         Args:
             realized_vol_annual: Current annualized volatility
             target_vol_annual: Target annualized volatility
             gross_leverage_max: Maximum gross leverage
+            history_days: Number of days of return history (for burn-in)
 
         Returns:
-            Scaling factor to apply to positions (0.0 to max_leverage)
+            Tuple of (scaling_factor, diagnostics_dict)
         """
         target_vol = target_vol_annual or self.vol_target_annual
         max_leverage = gross_leverage_max or self.gross_leverage_max
+        hist_days = history_days if history_days is not None else self.burn_in_days
 
-        # Handle invalid volatility values
-        if realized_vol_annual is None or pd.isna(realized_vol_annual) or realized_vol_annual <= 0:
-            return 1.0
+        diagnostics = {
+            'target_vol': target_vol,
+            'max_leverage': max_leverage,
+            'raw_realized_vol': realized_vol_annual,
+            'history_days': hist_days,
+        }
+
+        # Use burn-in prior for effective volatility
+        eff_vol, burn_in_active, vol_diagnostics = self.effective_realized_vol(
+            realized_vol_annual, hist_days
+        )
+        diagnostics.update(vol_diagnostics)
+
+        # Handle invalid volatility values (after burn-in still zero)
+        if eff_vol is None or pd.isna(eff_vol) or eff_vol <= 0:
+            diagnostics['fallback'] = 'invalid_vol'
+            return 1.0, diagnostics
 
         # Phase 6: Apply volatility floor
-        floored_vol = max(self.vol_floor, realized_vol_annual)
+        floored_vol = max(self.vol_floor, eff_vol)
+        diagnostics['floored_vol'] = floored_vol
 
         # Compute raw scaling
         raw_scaling = target_vol / floored_vol
+        diagnostics['raw_scaling'] = raw_scaling
 
         # Ensure we never return NaN or infinity
         if pd.isna(raw_scaling) or np.isinf(raw_scaling):
-            return 1.0
+            diagnostics['fallback'] = 'nan_or_inf'
+            return 1.0, diagnostics
 
-        # Phase 6: Clip to [0.0, max_leverage]
-        # Now allows scaling > 1.0 for low vol periods
-        return np.clip(raw_scaling, 0.0, max_leverage)
+        # Apply scaling clamps (prevents extreme scaling)
+        clamped_scaling = np.clip(raw_scaling, self.min_scaling_factor, self.max_scaling_factor)
+        diagnostics['clamped_scaling'] = clamped_scaling
+        diagnostics['clamp_applied'] = clamped_scaling != raw_scaling
+        diagnostics['min_clamp'] = self.min_scaling_factor
+        diagnostics['max_clamp'] = self.max_scaling_factor
+
+        # Phase 6: Also clip to [0.0, max_leverage] for leverage constraint
+        final_scaling = np.clip(clamped_scaling, 0.0, max_leverage)
+        diagnostics['final_scaling'] = final_scaling
+        diagnostics['leverage_clamp_applied'] = final_scaling != clamped_scaling
+
+        return final_scaling, diagnostics
 
     def compute_ewma_vol(
         self,
@@ -368,6 +416,55 @@ class RiskEngine:
 
         # Apply floor
         return max(self.vol_floor, blended)
+
+    def effective_realized_vol(
+        self,
+        realized_vol_annual: Optional[float],
+        history_days: int
+    ) -> Tuple[float, bool, Dict[str, Any]]:
+        """
+        Compute effective realized volatility with burn-in prior.
+
+        During burn-in period (history_days < burn_in_days), uses a prior
+        volatility estimate to prevent extreme scaling on day 0.
+
+        Args:
+            realized_vol_annual: Computed realized vol (or None if unavailable)
+            history_days: Number of valid daily returns in history
+
+        Returns:
+            Tuple of (effective_vol, burn_in_active, diagnostics_dict)
+        """
+        diagnostics = {
+            'raw_realized_vol': realized_vol_annual,
+            'history_days': history_days,
+            'burn_in_days_config': self.burn_in_days,
+            'initial_vol_prior': self.initial_vol_annual,
+            'min_vol_floor': self.min_vol_annual,
+        }
+
+        rv = realized_vol_annual if realized_vol_annual is not None else 0.0
+        burn_in_active = history_days < self.burn_in_days
+
+        # During burn-in, use prior if realized vol is lower
+        if burn_in_active:
+            rv = max(rv, self.initial_vol_annual)
+            diagnostics['burn_in_applied'] = True
+        else:
+            diagnostics['burn_in_applied'] = False
+
+        # Apply hard minimum floor
+        if self.min_vol_annual:
+            rv = max(rv, self.min_vol_annual)
+
+        # Final safety: if still zero/invalid, use prior
+        if rv <= 0:
+            rv = self.initial_vol_annual
+
+        diagnostics['effective_vol'] = rv
+        diagnostics['burn_in_active'] = burn_in_active
+
+        return rv, burn_in_active, diagnostics
 
     def compute_var(
         self,
@@ -806,8 +903,12 @@ class RiskEngine:
         # Phase 8: Update risk state machine
         risk_state = self.update_risk_state(regime, current_dd)
 
-        # Phase 6: Compute base scaling from volatility targeting
-        vol_scaling = self.compute_scaling_factor(realized_vol)
+        # Phase 6: Compute base scaling from volatility targeting (with burn-in + clamps)
+        # Determine history days from returns series
+        history_days = len(returns_series) if returns_series is not None else 0
+        vol_scaling, scaling_diagnostics = self.compute_scaling_factor(
+            realized_vol, history_days=history_days
+        )
 
         # Phase 8: Get state machine scaling (replaces multiplicative)
         state_scaling = self.get_risk_state_scaling()
@@ -849,7 +950,8 @@ class RiskEngine:
             reduce_core_exposure=should_reduce,
             reduce_factor=reduce_factor,
             increase_hedges=increase_hedges,
-            warnings=warnings
+            warnings=warnings,
+            scaling_diagnostics=scaling_diagnostics
         )
 
     def compute_risk_metrics(
@@ -875,8 +977,9 @@ class RiskEngine:
         vol_20d = self.compute_realized_vol_annual(returns_series, 20)
         vol_60d = self.compute_realized_vol_annual(returns_series, 60)
 
-        # Scaling
-        scaling = self.compute_scaling_factor(vol_20d)
+        # Scaling (with burn-in + clamps)
+        history_days = len(returns_series) if returns_series is not None else 0
+        scaling, _ = self.compute_scaling_factor(vol_20d, history_days=history_days)
 
         # Drawdown
         if not portfolio_state.nav_history.empty:

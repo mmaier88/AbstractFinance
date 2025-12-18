@@ -26,6 +26,7 @@ from .logging_utils import setup_logging, TradingLogger, get_trading_logger
 from .healthcheck import start_health_server, get_health_server
 from .futures_rollover import check_and_roll_futures
 from .fx_rates import FXRates, get_fx_rates
+from .legacy_unwind import LegacyUnwindGlidepath, create_glidepath
 
 # ROADMAP Phase A: Run Ledger for exactly-once execution
 try:
@@ -170,7 +171,8 @@ class DailyScheduler:
         self,
         config_path: str = "config/settings.yaml",
         instruments_path: str = "config/instruments.yaml",
-        state_dir: str = "state"
+        state_dir: str = "state",
+        dry_run: bool = False
     ):
         """
         Initialize the scheduler.
@@ -179,7 +181,9 @@ class DailyScheduler:
             config_path: Path to settings.yaml
             instruments_path: Path to instruments.yaml
             state_dir: Directory for state files
+            dry_run: If True, compute everything but do not submit orders
         """
+        self.dry_run = dry_run
         # Load configuration
         self.settings = load_settings(config_path)
         self.instruments = load_instruments_config(instruments_path)
@@ -238,6 +242,9 @@ class DailyScheduler:
             if run_ledger_config.get('enabled', True):
                 db_path = run_ledger_config.get('db_path', 'state/run_ledger.db')
                 self.run_ledger = RunLedger(db_path)
+
+        # Legacy Unwind Glidepath for gradual position transitions
+        self.legacy_glidepath: Optional[LegacyUnwindGlidepath] = None
 
     def initialize(self) -> bool:
         """
@@ -473,6 +480,16 @@ class DailyScheduler:
 
             # Note: AlertManager is already initialized at the start of initialize()
 
+            # Initialize Legacy Unwind Glidepath for gradual position transitions
+            self.legacy_glidepath = create_glidepath(self.settings)
+            if self.legacy_glidepath.enabled:
+                self.logger.logger.info(
+                    "legacy_glidepath_initialized",
+                    enabled=True,
+                    unwind_days=self.legacy_glidepath.unwind_days,
+                    has_snapshot=self.legacy_glidepath.has_snapshot()
+                )
+
             self.logger.logger.info("scheduler_init_complete")
             return True
 
@@ -494,6 +511,7 @@ class DailyScheduler:
         run_summary = {
             "date": date.today().isoformat(),
             "mode": self.mode,
+            "dry_run": self.dry_run,
             "success": False,
             "steps_completed": [],
             "errors": [],
@@ -503,6 +521,9 @@ class DailyScheduler:
             "fx_rates_valid": False,
             "reconciliation_status": "NOT_CHECKED"
         }
+
+        if self.dry_run:
+            self.logger.logger.info("dry_run_mode_active")
 
         # Check for maintenance window
         in_maintenance, window_name, minutes_remaining = is_maintenance_window()
@@ -602,6 +623,16 @@ class DailyScheduler:
             run_summary["strategy_orders"] = len(strategy_output.orders)
             run_summary["steps_completed"].append("compute_strategy")
 
+            # Step 5.5: Legacy Unwind Glidepath - blend positions for gradual transition
+            if self.legacy_glidepath and self.legacy_glidepath.enabled:
+                glidepath_result = self._apply_legacy_glidepath(strategy_output)
+                if glidepath_result:
+                    strategy_output, glidepath_diagnostics = glidepath_result
+                    run_summary["glidepath_applied"] = glidepath_diagnostics.get('blending_applied', False)
+                    run_summary["glidepath_alpha"] = glidepath_diagnostics.get('alpha', 1.0)
+                    run_summary["glidepath_days_elapsed"] = glidepath_diagnostics.get('days_elapsed', 0)
+                run_summary["steps_completed"].append("legacy_glidepath")
+
             # Step 6: Manage tail hedges
             hedge_orders = self._manage_hedges()
             run_summary["hedge_orders"] = len(hedge_orders)
@@ -666,7 +697,29 @@ class DailyScheduler:
                     self.logger.logger.warning(f"run_ledger_begin_failed: {e}")
 
             if all_orders:
-                if in_maintenance:
+                if self.dry_run:
+                    # Dry-run mode: log orders but do not execute
+                    self.logger.logger.info(
+                        "dry_run_orders",
+                        extra={
+                            "order_count": len(all_orders),
+                            "orders": [
+                                {"instrument": o.instrument_id, "side": o.side, "qty": o.quantity}
+                                for o in all_orders
+                            ]
+                        }
+                    )
+                    run_summary["dry_run"] = True
+                    run_summary["dry_run_orders"] = len(all_orders)
+                    run_summary["orders_placed"] = 0
+                    run_summary["orders_filled"] = 0
+                    print("\n" + "="*60)
+                    print("DRY RUN - Orders would be executed:")
+                    print("="*60)
+                    for order in all_orders:
+                        print(f"  {order.side:4} {order.quantity:6} {order.instrument_id}")
+                    print("="*60 + "\n")
+                elif in_maintenance:
                     # Skip order execution during maintenance
                     self.logger.logger.warning(
                         f"Skipping {len(all_orders)} orders due to maintenance window"
@@ -965,7 +1018,8 @@ class DailyScheduler:
             ratio_series=ratio_series
         )
 
-        # Log risk decision
+        # Log risk decision with vol burn-in and scaling clamp diagnostics
+        diag = risk_decision.scaling_diagnostics or {}
         self.logger.log_risk_decision(
             decision_type="daily_risk_eval",
             scaling_factor=risk_decision.scaling_factor,
@@ -974,6 +1028,21 @@ class DailyScheduler:
             max_drawdown=self.risk_engine.max_drawdown_pct,
             current_drawdown=self.portfolio.current_drawdown,
             emergency_derisk=risk_decision.emergency_derisk
+        )
+
+        # Log vol burn-in and scaling clamp diagnostics
+        self.logger.logger.info(
+            "scaling_diagnostics",
+            extra={
+                "history_days": diag.get('history_days', 0),
+                "raw_realized_vol": diag.get('raw_realized_vol'),
+                "effective_vol": diag.get('effective_vol'),
+                "burn_in_active": diag.get('burn_in_active', False),
+                "raw_scaling": diag.get('raw_scaling'),
+                "clamped_scaling": diag.get('clamped_scaling'),
+                "clamp_applied": diag.get('clamp_applied', False),
+                "final_scaling": diag.get('final_scaling'),
+            }
         )
 
         return risk_decision
@@ -990,6 +1059,94 @@ class DailyScheduler:
             risk_decision=risk_decision,
             fx_rates=self.fx_rates  # ENGINE_FIX_PLAN: Pass centralized FX rates
         )
+
+    def _apply_legacy_glidepath(self, strategy_output) -> Optional[tuple]:
+        """
+        Apply legacy unwind glidepath to blend strategy targets with initial positions.
+
+        On first run: saves current positions as snapshot, returns None (no blending).
+        On subsequent runs: blends targets with initial snapshot based on elapsed days.
+
+        Args:
+            strategy_output: StrategyOutput from _compute_strategy_targets
+
+        Returns:
+            Tuple of (modified_strategy_output, diagnostics) or None if first run
+        """
+        if not self.legacy_glidepath:
+            return None
+
+        # Check if this is the first run (no snapshot exists)
+        if self.legacy_glidepath.is_first_run():
+            # Get current positions from portfolio as quantities
+            current_positions = {
+                inst_id: pos.quantity
+                for inst_id, pos in self.portfolio.positions.items()
+            }
+
+            # Save snapshot for future blending
+            first_run_diagnostics = self.legacy_glidepath.handle_first_run(current_positions)
+
+            self.logger.logger.info(
+                "legacy_glidepath_first_run",
+                positions_saved=len(current_positions),
+                unwind_days=self.legacy_glidepath.unwind_days
+            )
+
+            # On first run, we could either:
+            # 1. Return original targets (start trading immediately)
+            # 2. Return current positions (no trades on day 0)
+            # We choose option 1: return original targets but with diagnostics
+            first_run_diagnostics['blending_applied'] = False
+            first_run_diagnostics['alpha'] = 0.0  # Day 0
+            first_run_diagnostics['days_elapsed'] = 0
+            return strategy_output, first_run_diagnostics
+
+        # Blend positions with initial snapshot
+        blended_positions, diagnostics = self.legacy_glidepath.blend_positions(
+            strategy_output.total_target_positions
+        )
+
+        # If no blending was applied (fully converged), return original output
+        if not diagnostics.get('blending_applied', False):
+            return strategy_output, diagnostics
+
+        # Re-generate orders based on blended positions
+        from .strategy_logic import StrategyOutput, generate_rebalance_orders
+
+        # Get current positions as quantities
+        current_positions = {
+            inst_id: pos.quantity
+            for inst_id, pos in self.portfolio.positions.items()
+        }
+
+        # Generate new orders from blended targets
+        blended_orders = generate_rebalance_orders(
+            current_positions=current_positions,
+            target_positions=blended_positions,
+            instruments_config=self.instruments,
+            min_trade_value=self.settings.get('execution', {}).get('min_trade_notional_usd', 500.0)
+        )
+
+        # Create modified strategy output with blended positions and orders
+        modified_output = StrategyOutput(
+            sleeve_targets=strategy_output.sleeve_targets,
+            total_target_positions=blended_positions,
+            orders=blended_orders,
+            scaling_factor=strategy_output.scaling_factor,
+            regime=strategy_output.regime,
+            commentary=strategy_output.commentary + f"\n[Glidepath: alpha={diagnostics.get('alpha', 1.0):.2f}, day {diagnostics.get('days_elapsed', 0)}/{self.legacy_glidepath.unwind_days}]"
+        )
+
+        self.logger.logger.info(
+            "legacy_glidepath_blended",
+            alpha=diagnostics.get('alpha', 1.0),
+            days_elapsed=diagnostics.get('days_elapsed', 0),
+            original_orders=len(strategy_output.orders),
+            blended_orders=len(blended_orders)
+        )
+
+        return modified_output, diagnostics
 
     def _manage_hedges(self) -> List[OrderSpec]:
         """Manage tail hedge positions."""
@@ -1736,11 +1893,13 @@ def main():
 
     parser = argparse.ArgumentParser(description='AbstractFinance Trading Scheduler')
     parser.add_argument('--once', action='store_true', help='Run once and exit (for testing)')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Compute everything but do not submit orders (for testing)')
     args = parser.parse_args()
 
-    if args.once:
-        # Single run mode (for testing/cron)
-        scheduler = DailyScheduler()
+    if args.once or args.dry_run:
+        # Single run mode (for testing/cron) or dry-run mode
+        scheduler = DailyScheduler(dry_run=args.dry_run)
         try:
             if scheduler.initialize():
                 result = scheduler.run_daily()
