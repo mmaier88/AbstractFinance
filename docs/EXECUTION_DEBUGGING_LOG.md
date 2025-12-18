@@ -269,16 +269,260 @@ ib.disconnect()
 
 ---
 
-## Why Orders Show 0 Filled
+---
 
-Even with 24 orders placed, `orders_filled: 0` is expected because:
+## Execution Fixes (December 18, 2025)
 
-1. **Limit Orders**: The execution stack uses `marketable_limit` policy, not market orders
-2. **Paper Trading**: Paper trading may have limited liquidity simulation
-3. **Market Hours**: Orders placed outside market hours won't fill immediately
-4. **Order Expiry**: Day orders expire at market close
+Major improvements to order execution that increased fill rate from **0% to ~80%**.
 
-To verify fills, check:
-- `ib.executions()` for today's fills
-- `ib.openOrders()` for pending orders
-- Trading engine logs for order status updates
+### 10. Timezone Bug in Market Open Safety Check
+
+**Symptom:** `Within 15 min of EU market open` blocking trades at wrong times
+
+**Root Cause:** `is_near_market_open()` compared `datetime.now()` (UTC) to local market open times without timezone conversion.
+
+**Fix:** Added pytz and convert current time to exchange timezone:
+```python
+import pytz
+
+def is_near_market_open(exchange: str = "US", buffer_minutes: int = 15) -> bool:
+    now_utc = datetime.now(pytz.UTC)
+
+    if exchange == "US":
+        tz = pytz.timezone("America/New_York")
+        market_open = time(9, 30)
+    else:
+        tz = pytz.timezone("Europe/Berlin")
+        market_open = time(9, 0)
+
+    local_time = now_utc.astimezone(tz).time()
+    # ... comparison with local_time
+```
+
+**File:** `src/execution_ibkr.py:55-85`
+
+---
+
+### 11. NAV Reconciliation Using Wrong Value
+
+**Symptom:** NAV diff 0.32% causing unnecessary halts
+
+**Root Cause:** IBKR's `NetLiquidation` differs from positions + cash by ~$800 due to internal calculations.
+
+**Fix:** Added `get_computed_nav()` to calculate NAV from positions + cash:
+```python
+def get_computed_nav(self, fx_rates) -> Optional[float]:
+    """Compute NAV from positions + cash (more accurate than NetLiquidation)."""
+    positions_value = sum(item.marketValue for item in self.ib.portfolio())
+
+    cash_balances = {}
+    for av in self.ib.accountValues():
+        if av.tag == 'CashBalance' and av.currency != 'BASE':
+            cash_balances[av.currency] = float(av.value)
+
+    total_cash_eur = sum(fx_rates.to_base(v, c) for c, v in cash_balances.items())
+    return positions_value_eur + total_cash_eur
+```
+
+**File:** `src/execution_ibkr.py:280-315`, `src/scheduler.py:213-230`
+
+---
+
+### 12. Order Replacement Bug (Error 103: Duplicate Order ID)
+
+**Symptom:** `Error 103: Duplicate order id` when replacing orders
+
+**Root Cause:** `modify_order()` was reusing the same order ID for the replacement order. IBKR requires a new order ID for cancel/replace.
+
+**Fix:** Changed to proper cancel/replace pattern:
+```python
+def modify_order(self, broker_order_id: int, new_limit_price: float) -> Tuple[bool, Optional[int]]:
+    """Cancel existing order and submit new one with fresh ID."""
+    trade = self._active_trades.get(broker_order_id)
+
+    # Cancel existing order
+    self.ib_client.ib.cancelOrder(trade.order)
+    del self._active_trades[broker_order_id]
+
+    # Create new order with new ID
+    new_order = LimitOrder(action=side, totalQuantity=qty, lmtPrice=new_limit_price)
+    new_trade = self.ib_client.ib.placeOrder(contract, new_order)
+
+    return True, new_trade.order.orderId  # Return NEW order ID
+```
+
+**File:** `src/execution_ibkr.py:686-740`, `src/execution/order_manager.py:401-425`
+
+---
+
+### 13. Missing Market Data for LSE ETFs (Error 354)
+
+**Symptom:** `Error 354: Market data not subscribed` for LSEETF instruments
+
+**Root Cause:** Paper trading account doesn't have real-time quotes for LSE. Without bid/ask, limit prices were too conservative to fill.
+
+**Fix:** When quotes unavailable, use 2x slippage to ensure fills:
+```python
+def _marketable_limit_price(self, md, side, max_slip_bps):
+    if md.has_quotes():
+        # Normal calculation with bid/ask
+        ...
+    else:
+        # No quotes - be MORE aggressive (2x slippage)
+        aggressive_slip = max_slip * 2.0
+        if side == "BUY":
+            return ref * (1.0 + aggressive_slip)
+        else:
+            return ref * (1.0 - aggressive_slip)
+```
+
+**File:** `src/execution/policy.py:377-400`
+
+---
+
+### 14. Tick Size Rounding (Warning 110)
+
+**Symptom:** `Warning 110: The price does not conform to the minimum price variation`
+
+**Root Cause:** Limit prices like `95.70001048955801` have too many decimal places. IBKR requires prices rounded to tick size (usually $0.01).
+
+**Fix:** Added `_round_to_tick()` helper and applied to all price calculations:
+```python
+def _round_to_tick(self, price: float, tick_size: float = 0.01) -> float:
+    """Round price to valid tick size for IBKR."""
+    return round(price / tick_size) * tick_size
+
+def _marketable_limit_price(self, md, side, max_slip_bps) -> float:
+    # ... calculate price ...
+    return self._round_to_tick(price)  # Always round before returning
+```
+
+**Applied to:**
+- `_marketable_limit_price()` - initial order price
+- `_calculate_collar()` - price ceiling/floor
+- `update_limit_for_replace()` - replacement order price
+
+**File:** `src/execution/policy.py:344-353, 382, 387, 397, 400, 412, 415, 498, 504`
+
+---
+
+### 15. Slippage Too Tight for Fills
+
+**Symptom:** 0% fill rate despite orders being placed
+
+**Root Cause:** Default 10bps slippage was too tight for crossing spreads, especially on less liquid instruments.
+
+**Fix:** Increased default slippage from 10bps to 25bps:
+```python
+@dataclass
+class ExecutionConfig:
+    default_max_slippage_bps: float = 25.0  # Was 10.0
+
+    max_slippage_bps_by_asset_class = {
+        "ETF": 25.0,   # Was 10.0
+        "STK": 30.0,   # Was 15.0
+        "FUT": 5.0,
+        "FX_FUT": 3.0,
+    }
+```
+
+**File:** `src/execution/policy.py:49-83`
+
+---
+
+### 16. Margin Rejection Due to Order Sequencing
+
+**Symptom:** `Error 201: Insufficient margin` for BUY orders
+
+**Root Cause:** BUY orders were executing before SELL orders. Without sell proceeds, account lacked margin for buys.
+
+**Fix:** Execute SELLs before BUYs to free up margin first:
+```python
+def order_by_priority(self, net_positions):
+    def priority_key(pos):
+        # 1. Crisis urgency first
+        # 2. Futures first (hedging)
+        # 3. SELLS before BUYS (frees margin)
+        side_score = 0 if pos.side == "SELL" else 1
+        # 4. Liquidity tier
+        # 5. Notional size
+        return (urgency, asset_class, side_score, liquidity, -notional)
+```
+
+**File:** `src/execution/basket.py:205-256`
+
+---
+
+## Execution Results After Fixes
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Fill Rate | 0% | ~80% |
+| Orders Placed | 24 | 6 |
+| Orders Filled | 0 | 5 |
+| Avg Fill Time | N/A | <5 seconds |
+
+**Sample Fills (Dec 18, 2025):**
+- FLOT: SELL 652 @ $5.03 (filled in 3s)
+- EXV1: BUY 9 @ €34.32 (filled in 1s)
+- IUIT: SELL 4 @ $40.67 (filled in 2s)
+- IHYU: SELL 157 @ $95.57 (filled in 1s)
+- CSPX: SELL 933 @ ~$722.31 (partial fills ongoing)
+
+---
+
+## System Capabilities Summary
+
+### Order Execution
+- **Marketable Limit Orders**: Cross spread with slippage protection (25bps default)
+- **Cancel/Replace**: Automatic order repricing every 15s, up to 6 attempts
+- **Tick Size Compliance**: All prices rounded to $0.01 for IBKR
+- **TTL Expiry**: Orders cancelled after 120s if unfilled
+- **Margin Optimization**: Sells execute before buys
+
+### Market Data
+- **Batch Fetching**: Single 2s wait for N instruments (was N*1s)
+- **Circuit Breakers**: Auto-recovery after failures (IBKR: 3 fails/60s, Yahoo: 5 fails/120s)
+- **GBX Handling**: Whitelist of LSE ETFs that quote in pence
+- **Quality Metrics**: Track success rates, latency, staleness
+
+### Risk Management
+- **NAV Reconciliation**: Compare internal vs broker NAV (0.5% threshold)
+- **Timezone Safety**: Block trades near market open/close
+- **Exposure Limits**: Validate gross/net exposure before trading
+
+---
+
+## Commands for Debugging
+
+```bash
+# Check gateway status
+ssh root@94.130.228.55 'docker compose -f /srv/abstractfinance/docker-compose.yml ps ibgateway'
+
+# View trading engine logs
+ssh root@94.130.228.55 'docker compose -f /srv/abstractfinance/docker-compose.yml logs --tail=100 trading-engine'
+
+# Run manual test execution
+ssh root@94.130.228.55 'docker run --rm \
+  -v /srv/abstractfinance/config:/app/config:ro \
+  -v /srv/abstractfinance/state:/app/state \
+  -v /srv/abstractfinance/logs:/app/logs \
+  --network host \
+  -e FORCE_EXECUTION=1 \
+  -e MODE=paper \
+  -e IBKR_HOST=localhost \
+  -e IBKR_PORT=4000 \
+  -w /app \
+  abstractfinance-trading-engine python -m src.scheduler --once 2>&1'
+
+# Check portfolio via IB API
+ssh root@94.130.228.55 'docker run --rm --network host \
+  abstractfinance-trading-engine python -c "
+from ib_insync import IB
+ib = IB()
+ib.connect('localhost', 4000, clientId=99)
+for p in ib.positions():
+    print(f'{p.contract.symbol}: {p.position}')
+ib.disconnect()
+"'
+```
