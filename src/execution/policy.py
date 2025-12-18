@@ -341,6 +341,17 @@ class ExecutionPolicy:
             price_floor=floor,
         )
 
+    def _round_to_tick(self, price: float, tick_size: float = 0.01) -> float:
+        """
+        Round price to valid tick size.
+
+        IBKR requires prices to conform to minimum price variation.
+        Most stocks/ETFs use $0.01 tick size.
+        """
+        if tick_size <= 0:
+            tick_size = 0.01
+        return round(price / tick_size) * tick_size
+
     def _marketable_limit_price(
         self,
         md: MarketDataSnapshot,
@@ -351,6 +362,7 @@ class ExecutionPolicy:
         Calculate marketable limit price.
 
         Goal: Cross the spread but cap worst-case fill.
+        Returns price rounded to proper tick size.
         """
         ref = md.reference_price
         if ref is None:
@@ -367,12 +379,12 @@ class ExecutionPolicy:
                 # Pay up to ask + buffer, but cap at ref*(1+max_slip)
                 aggressive_price = md.ask + micro_buffer
                 collar_price = ref * (1.0 + max_slip)
-                return min(aggressive_price, collar_price)
+                return self._round_to_tick(min(aggressive_price, collar_price))
             else:
                 # Accept down to bid - buffer, but floor at ref*(1-max_slip)
                 aggressive_price = md.bid - micro_buffer
                 collar_price = ref * (1.0 - max_slip)
-                return max(aggressive_price, collar_price)
+                return self._round_to_tick(max(aggressive_price, collar_price))
         else:
             # No quotes available - be MORE aggressive to ensure fills
             # Without quotes, we don't know the actual spread, so assume it could be wide
@@ -382,10 +394,10 @@ class ExecutionPolicy:
 
             if side == "BUY":
                 # For buys, pay up to ref + 2x slippage to cross unknown spread
-                return ref * (1.0 + aggressive_slip)
+                return self._round_to_tick(ref * (1.0 + aggressive_slip))
             else:
                 # For sells, accept down to ref - 2x slippage
-                return ref * (1.0 - aggressive_slip)
+                return self._round_to_tick(ref * (1.0 - aggressive_slip))
 
     def _calculate_collar(
         self,
@@ -397,10 +409,10 @@ class ExecutionPolicy:
         max_slip = max_slip_bps / 10000.0
 
         if side == "BUY":
-            ceiling = ref_price * (1.0 + max_slip)
+            ceiling = self._round_to_tick(ref_price * (1.0 + max_slip))
             return (ceiling, None)
         else:
-            floor = ref_price * (1.0 - max_slip)
+            floor = self._round_to_tick(ref_price * (1.0 - max_slip))
             return (None, floor)
 
     def _estimate_minutes_since_open(self, ts: datetime) -> Optional[int]:
@@ -459,6 +471,7 @@ class ExecutionPolicy:
         Calculate new limit price for order replacement.
 
         Progressively becomes more aggressive while staying within collar.
+        Returns price rounded to proper tick size.
 
         Returns:
             New limit price, or None if should not replace
@@ -482,13 +495,13 @@ class ExecutionPolicy:
             base_price = md.ask if md.has_quotes() else ref
             collar_ceiling = current_plan.price_ceiling or ref * (1.0 + max_slip)
             new_price = base_price + (collar_ceiling - base_price) * aggression
-            return min(new_price, collar_ceiling)
+            return self._round_to_tick(min(new_price, collar_ceiling))
         else:
             # Move limit down toward floor
             base_price = md.bid if md.has_quotes() else ref
             collar_floor = current_plan.price_floor or ref * (1.0 - max_slip)
             new_price = base_price - (base_price - collar_floor) * aggression
-            return max(new_price, collar_floor)
+            return self._round_to_tick(max(new_price, collar_floor))
 
 
 def load_execution_config(settings: Dict[str, Any]) -> ExecutionConfig:
