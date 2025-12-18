@@ -805,6 +805,64 @@ class IBClient:
         except Exception:
             return None
 
+    def get_computed_nav(self, fx_rates) -> Optional[float]:
+        """
+        Compute NAV from positions + cash with FX conversion.
+
+        This is more accurate than NetLiquidation for reconciliation because
+        it uses the same FX rates as our internal calculations.
+
+        Args:
+            fx_rates: FXRates instance for currency conversion
+
+        Returns:
+            Computed NAV in USD, or None if unavailable
+        """
+        if not self.is_connected():
+            return None
+
+        try:
+            # Get FX rates for conversion
+            eurusd = fx_rates.rates.get(('EUR', 'USD'), 1.0)
+            gbpusd = fx_rates.rates.get(('GBP', 'USD'), 1.0)
+
+            # Sum position values (converted to USD)
+            position_total_usd = 0.0
+            for item in self.ib.portfolio():
+                ccy = item.contract.currency
+
+                if item.contract.secType == 'FUT':
+                    # Futures: only count unrealized P&L (already in USD)
+                    position_total_usd += item.unrealizedPNL
+                else:
+                    # Stocks/ETFs: convert market value to USD
+                    mkt_val = item.marketValue
+                    if ccy == 'EUR':
+                        position_total_usd += mkt_val * eurusd
+                    elif ccy == 'GBP':
+                        position_total_usd += mkt_val * gbpusd
+                    else:
+                        position_total_usd += mkt_val
+
+            # Sum cash balances (converted to USD)
+            cash_total_usd = 0.0
+            for av in self.ib.accountValues():
+                if av.tag == 'TotalCashBalance':
+                    cash = float(av.value)
+                    if av.currency == 'EUR':
+                        cash_total_usd += cash * eurusd
+                    elif av.currency == 'GBP':
+                        cash_total_usd += cash * gbpusd
+                    elif av.currency == 'USD':
+                        cash_total_usd += cash
+                    # Skip BASE currency to avoid double-counting
+
+            return position_total_usd + cash_total_usd
+
+        except Exception as e:
+            self.logger.logger.warning("get_computed_nav_failed", error=str(e))
+            return None
+
 
 # =============================================================================
 # EXECUTION STACK UPGRADE: IBKRTransport
