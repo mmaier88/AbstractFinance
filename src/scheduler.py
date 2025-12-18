@@ -198,12 +198,18 @@ class DailyScheduler:
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
         # INVARIANT CHECK: Validate instruments config at startup
-        config_valid, config_errors = validate_instruments_config(self.instruments)
+        config_valid, config_messages = validate_instruments_config(self.instruments)
         if not config_valid:
             raise InvariantError(
-                f"Invalid instruments config: {config_errors}. "
+                f"Invalid instruments config: {config_messages}. "
                 f"Fix config/instruments.yaml before running."
             )
+        # 80/20 IMPROVEMENT: Send Telegram alert on config warnings
+        # (even if validation passes, warnings are useful to know about)
+        config_warnings = [m for m in config_messages if "Duplicate symbol" in m]
+        if config_warnings:
+            # Will send alert after alert_manager is initialized
+            self._pending_config_warnings = config_warnings
 
         # Set up logging
         log_file = self.state_dir / "logs" / f"trading_{date.today().isoformat()}.log"
@@ -276,6 +282,16 @@ class DailyScheduler:
                 try:
                     self.alert_manager = AlertManager(self.settings)
                     self.logger.logger.info("alert_manager_initialized")
+                    # 80/20 IMPROVEMENT: Send pending config warnings via Telegram
+                    if hasattr(self, '_pending_config_warnings') and self._pending_config_warnings:
+                        self.alert_manager.send_alert(
+                            alert_type="config",
+                            severity="warning",
+                            title="Config Warnings on Startup",
+                            message=f"Found {len(self._pending_config_warnings)} config warnings:\n" +
+                                    "\n".join(self._pending_config_warnings[:5])
+                        )
+                        del self._pending_config_warnings
                 except Exception as e:
                     self.logger.logger.warning(f"alert_manager_init_failed: {e}")
 
@@ -776,6 +792,45 @@ class DailyScheduler:
                             self.logger.logger.warning(f"run_ledger_mark_done_failed: {e}")
 
             run_summary["steps_completed"].append("execute_orders")
+
+            # Step 8.5: Post-order reconciliation check (80/20 improvement)
+            # Re-sync positions from IBKR and verify they match expectations
+            if execution_results.get("filled", 0) > 0 and not dry_run:
+                self.logger.logger.info("post_order_reconciliation_start")
+                try:
+                    # Wait for IBKR to settle
+                    time.sleep(2)
+                    # Re-sync positions from broker
+                    self._sync_positions()
+                    # Compare expected vs actual
+                    broker_positions = self.ib_client.get_positions(self.instruments) if self.ib_client else {}
+                    internal_positions = {k: v.quantity for k, v in self.portfolio.positions.items()}
+
+                    mismatches = []
+                    for inst_id in set(broker_positions.keys()) | set(internal_positions.keys()):
+                        broker_qty = broker_positions.get(inst_id, type('obj', (object,), {'quantity': 0})()).quantity if inst_id in broker_positions else 0
+                        internal_qty = internal_positions.get(inst_id, 0)
+                        if abs(broker_qty - internal_qty) > 0.01:
+                            mismatches.append(f"{inst_id}: broker={broker_qty}, internal={internal_qty}")
+
+                    if mismatches:
+                        self.logger.logger.warning(
+                            "post_order_reconciliation_mismatch",
+                            extra={"mismatches": mismatches}
+                        )
+                        # Alert on mismatch
+                        if self.alert_manager:
+                            self.alert_manager.send_alert(
+                                alert_type="reconciliation",
+                                severity="warning",
+                                title="Post-Order Reconciliation Mismatch",
+                                message=f"Position mismatches after execution:\n" + "\n".join(mismatches[:5])
+                            )
+                    else:
+                        self.logger.logger.info("post_order_reconciliation_success")
+                except Exception as e:
+                    self.logger.logger.warning(f"post_order_reconciliation_failed: {e}")
+                run_summary["steps_completed"].append("post_order_reconciliation")
 
             # Step 9: Record daily P&L
             self._record_daily_pnl()
