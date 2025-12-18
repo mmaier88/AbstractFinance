@@ -15,6 +15,7 @@ from datetime import datetime, time as dt_time
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+import pytz
 
 try:
     from ib_insync import (
@@ -1188,17 +1189,22 @@ def is_near_market_open(exchange: str = "US", buffer_minutes: int = MARKET_OPEN_
     Returns:
         True if within buffer of market open
     """
-    now = datetime.now()
-    current_time = now.time()
+    # Get current time in the exchange's local timezone
+    now_utc = datetime.now(pytz.UTC)
 
     if exchange == "US":
+        tz = pytz.timezone("America/New_York")
         market_open = US_MARKET_OPEN
     else:
+        tz = pytz.timezone("Europe/Berlin")
         market_open = EU_MARKET_OPEN
+
+    # Convert to local time in exchange timezone
+    local_time = now_utc.astimezone(tz).time()
 
     # Convert to minutes since midnight for easy comparison
     open_minutes = market_open.hour * 60 + market_open.minute
-    current_minutes = current_time.hour * 60 + current_time.minute
+    current_minutes = local_time.hour * 60 + local_time.minute
 
     # Check if within buffer after open
     if current_minutes >= open_minutes and current_minutes < open_minutes + buffer_minutes:
