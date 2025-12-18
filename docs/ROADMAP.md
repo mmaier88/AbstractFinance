@@ -757,5 +757,122 @@ These items may be valuable but are deferred to avoid scope creep:
 
 ---
 
+---
+
+## Phase P: Execution Reliability Framework (Status: COMPLETE) ✅
+
+**Date:** December 18, 2025
+
+**Goal:** Systematic testing infrastructure to prevent integration bugs from reaching production.
+
+**Why:** Issues 17-21 (phantom positions, ID mapping, GBX whitelist, glidepath edge cases) all slipped through 373 unit tests because they were integration bugs at component boundaries.
+
+### Deliverables
+
+#### P.1: Runtime Invariants (`src/utils/invariants.py`) ✅
+
+Assertions that catch bugs immediately at runtime:
+
+| Invariant | What It Catches |
+|-----------|-----------------|
+| `assert_position_id_valid()` | IBKR symbol used instead of config ID |
+| `assert_no_conflicting_orders()` | BUY and SELL for same instrument |
+| `assert_gbx_whitelist_valid()` | Non-GBP instruments in GBX whitelist |
+| `validate_instruments_config()` | Duplicate config IDs, symbol ambiguity |
+
+**Integration Points:**
+- `scheduler.py:_sync_positions()` - validates all position IDs
+- `scheduler.py:_execute_orders()` - validates no conflicting orders
+- `scheduler.py:__init__()` - validates instruments config at startup
+- `data_feeds.py:__init__()` - validates GBX whitelist
+
+#### P.2: Integration Test Suite (`tests/test_integration_flow.py`) ✅
+
+25 new tests covering critical integration points:
+- Position ID mapping (IBKR symbol → config ID)
+- Glidepath blending (Day 0, Day 1, Day 10 edge cases)
+- Price conversion (GBX only for GBP instruments)
+- Order generation (no conflicts, correct IDs)
+- End-to-end scenarios
+
+Run with: `pytest tests/test_integration_flow.py -v`
+
+#### P.3: Shared Test Fixtures (`tests/conftest.py`) ✅
+
+Centralized fixtures for realistic test data:
+- `sample_instruments_config` - production-like config
+- `mock_ibkr_portfolio` - realistic IBKR responses
+- `symbol_to_config_id` / `config_id_to_symbol` - ID mappings
+- `sample_orders`, `conflicting_orders`, `mixed_id_orders`
+- `sample_initial_positions`, `sample_target_positions`
+
+#### P.4: Simulation Mode (`src/simulation.py`) ✅
+
+Pre-deploy validation that runs full cycle without trading:
+
+```python
+from src.simulation import SimulationRunner, SimulationScenario
+
+runner = SimulationRunner(instruments_config)
+report = runner.run_predeploy_checks(positions, prices)
+
+if not report.all_passed:
+    print(report.summary())
+    # Don't deploy!
+```
+
+### What Each Layer Would Have Caught
+
+| Issue | Layer 1 (Runtime) | Layer 2 (Tests) | Layer 3 (Simulation) |
+|-------|-------------------|-----------------|----------------------|
+| 17: Phantom positions | ✓ | ✓ | ✓ |
+| 19: Glidepath Day 0 | - | ✓ | ✓ |
+| 20: GBX whitelist | ✓ | ✓ | - |
+| 21: ID mapping | ✓ | ✓ | ✓ |
+
+### Files Created/Modified
+
+```
+src/utils/__init__.py          # NEW
+src/utils/invariants.py        # NEW - 324 lines
+src/simulation.py              # NEW - 505 lines
+src/scheduler.py               # MODIFIED - added invariant checks
+src/data_feeds.py              # MODIFIED - added GBX validation
+tests/conftest.py              # NEW - shared fixtures
+tests/test_integration_flow.py # NEW - 25 integration tests
+```
+
+### Acceptance Criteria
+
+- [x] ID mapping bugs cause immediate crash with clear error
+- [x] Conflicting orders cause immediate crash before execution
+- [x] Invalid GBX whitelist causes crash at startup
+- [x] Invalid instruments config causes crash at startup
+- [x] 25 integration tests pass
+- [x] Simulation mode validates full execution flow
+
+---
+
+## Hedge Fund Best Practices Comparison
+
+This testing framework follows institutional standards:
+
+| Practice | Our Implementation | Hedge Fund Standard |
+|----------|-------------------|---------------------|
+| **Invariant Assertions** | Runtime checks in scheduler | Goldman uses "assertions" in trading systems |
+| **Pre-trade Validation** | `assert_no_conflicting_orders()` | Standard compliance check |
+| **Symbol/ID Mapping** | Bidirectional lookup + validation | Critical for multi-venue trading |
+| **Integration Tests** | 25 tests at component boundaries | Industry standard for quant systems |
+| **Simulation Mode** | Full cycle without execution | Paper trading / shadow mode |
+| **Fail-Fast** | Crash on invariant violation | Prefer halt over silent corruption |
+
+**What's Different:**
+- Institutional systems have **dedicated QA teams** running thousands of tests
+- Most have **shadow production** that mirrors live with no execution
+- Larger funds have **circuit breakers at exchange level** (not just internal)
+- We're catching up to institutional standards with limited resources
+
+---
+
 *Document created: 2025-12-16*
-*Last updated: 2025-12-17*
+*Last updated: 2025-12-18*
