@@ -1107,14 +1107,33 @@ class DailyScheduler:
                 unwind_days=self.legacy_glidepath.unwind_days
             )
 
-            # On first run, we could either:
-            # 1. Return original targets (start trading immediately)
-            # 2. Return current positions (no trades on day 0)
-            # We choose option 1: return original targets but with diagnostics
-            first_run_diagnostics['blending_applied'] = False
-            first_run_diagnostics['alpha'] = 0.0  # Day 0
+            # On first run (day 0), use current positions (NO TRADES)
+            # This protects legacy positions during burn-in period
+            # Tomorrow (day 1) we'll blend 10% toward targets, etc.
+            first_run_diagnostics['blending_applied'] = True
+            first_run_diagnostics['alpha'] = 0.0  # Day 0 = 100% initial, 0% target
             first_run_diagnostics['days_elapsed'] = 0
-            return strategy_output, first_run_diagnostics
+
+            # Create modified output with current positions as targets (no orders)
+            from .strategy_logic import StrategyOutput
+
+            no_trade_output = StrategyOutput(
+                sleeve_targets=strategy_output.sleeve_targets,
+                total_target_positions=current_positions,  # Use current, not targets
+                orders=[],  # No orders on day 0
+                scaling_factor=strategy_output.scaling_factor,
+                regime=strategy_output.regime,
+                commentary=strategy_output.commentary + f"\n[Glidepath Day 0: No trades, preserving {len(current_positions)} positions]"
+            )
+
+            self.logger.logger.info(
+                "legacy_glidepath_day0_protection",
+                positions_preserved=len(current_positions),
+                target_positions=len(strategy_output.total_target_positions),
+                orders_blocked=len(strategy_output.orders)
+            )
+
+            return no_trade_output, first_run_diagnostics
 
         # Blend positions with initial snapshot
         blended_positions, diagnostics = self.legacy_glidepath.blend_positions(
