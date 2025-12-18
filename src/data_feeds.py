@@ -178,13 +178,17 @@ class DataFeed:
     """
 
     # LSE ETFs quoted in GBX (pence) that need conversion to GBP
-    # This whitelist replaces the unreliable price > 100 heuristic
+    # ONLY GBP-currency instruments need this conversion!
+    # USD-denominated ETFs on LSE return prices in USD (not pence), so they should NOT be here.
+    # Check instruments.yaml 'currency' field to determine which instruments are GBP.
     GBX_QUOTED_ETFS = {
-        # iShares UCITS ETFs on LSE
-        "CSPX", "CNDX", "IUIT", "WTCH", "SEMI", "IUHC", "SBIO", "BTEK",
-        "IUQA", "IUMO", "SMEA", "IUKD", "LQDE", "IHYU", "HYLD", "FLOT",
-        "FLOA", "IHYG",
-        # Add other GBX-quoted ETFs as discovered
+        # GBP-denominated LSE ETFs only (from instruments.yaml with currency: "GBP")
+        "SMEA",   # iShares Core MSCI Europe UCITS ETF - GBP
+        "IUKD",   # iShares UK Dividend UCITS ETF - GBP
+        "IEAC",   # iShares Core Corp Bond UCITS ETF - GBP
+        "IHYG",   # iShares Euro High Yield Corp Bond UCITS ETF - GBP
+        # NOTE: Do NOT add USD-denominated ETFs like CSPX, LQDE, IHYU, FLOT etc.
+        # Those are already in USD and do not need pence conversion!
     }
 
     # Mapping from internal symbols to yfinance tickers
