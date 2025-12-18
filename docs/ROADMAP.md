@@ -853,6 +853,25 @@ tests/test_integration_flow.py # NEW - 25 integration tests
 
 ---
 
+### P.5: 80/20 Operational Improvements ✅
+
+Quick wins for maximum reliability with minimal effort:
+
+| Improvement | What | Impact |
+|-------------|------|--------|
+| **Pre-deploy test gate** | `scripts/deploy.sh` runs tests before deploy | Blocks broken code |
+| **Post-order reconciliation** | Re-sync from IBKR after execution | Catches phantom positions |
+| **Telegram on warnings** | Alert on config issues at startup | Early detection |
+| **Config diff on deploy** | Shows what will change | Prevents surprise |
+
+**Usage:**
+```bash
+./scripts/deploy.sh staging  # Full validation pipeline
+./scripts/deploy.sh prod     # Requires confirmation
+```
+
+---
+
 ## Hedge Fund Best Practices Comparison
 
 This testing framework follows institutional standards:
