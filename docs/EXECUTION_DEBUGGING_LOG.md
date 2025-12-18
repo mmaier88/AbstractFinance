@@ -773,6 +773,106 @@ GBX_QUOTED_ETFS = {
 
 ---
 
+### 21. IBKR Symbol vs Internal Config ID Mismatch
+
+**Date:** December 18, 2025
+
+**Symptom:** Conflicting orders generated for same instrument:
+- `us_index_etf BUY 4` AND `CSPX SELL 4` (same instrument!)
+- `ig_lqd BUY 6` AND `LQDE SELL 6` (same instrument!)
+
+Portfolio state showed only 3 positions while IBKR had 7.
+
+**Root Cause:** The `_contract_to_instrument_id()` function in `execution_ibkr.py` returned IBKR symbols (CSPX, LQDE) instead of internal config IDs (us_index_etf, ig_lqd).
+
+Flow:
+1. IBKR returns `contract.symbol = "CSPX"`
+2. `_contract_to_instrument_id()` returned "CSPX"
+3. Position stored as `positions["CSPX"] = ...`
+4. Strategy expects `positions["us_index_etf"]` - not found!
+5. Strategy generates BUY order for us_index_etf
+6. Meanwhile, orphan "CSPX" position generates conflicting SELL
+
+**Fix:** Added reverse lookup in `_contract_to_instrument_id()`:
+```python
+def _contract_to_instrument_id(self, contract, instruments_config=None):
+    ibkr_symbol = contract.symbol
+
+    # Reverse lookup: find internal ID that maps to this IBKR symbol
+    if instruments_config:
+        for category, instruments in instruments_config.items():
+            for inst_id, spec in instruments.items():
+                if spec.get('symbol') == ibkr_symbol:
+                    return inst_id  # Return internal ID, not IBKR symbol
+
+    return ibkr_symbol  # Fallback
+```
+
+Also updated `get_positions()` signature to accept `instruments_config` parameter.
+
+**Files:**
+- `src/execution_ibkr.py:430-472` - `_contract_to_instrument_id()`
+- `src/execution_ibkr.py:352-378` - `get_positions()`
+- `src/scheduler.py:459, 799` - Updated callers
+
+**Lesson:** Position sync MUST use internal config IDs, not IBKR symbols. Strategy and execution must use the same ID namespace.
+
+---
+
+## Systematic Testing Framework (Added Dec 18, 2025)
+
+To prevent Issues 17-21 from recurring, we added a three-layer testing approach:
+
+### Layer 1: Runtime Invariants (`src/utils/invariants.py`)
+
+Assertions that catch bugs immediately at runtime:
+
+| Invariant | What It Catches | Location |
+|-----------|-----------------|----------|
+| `assert_position_id_valid()` | IBKR symbol used instead of config ID | Position sync |
+| `assert_no_conflicting_orders()` | BUY and SELL for same instrument | Order generation |
+| `assert_gbx_whitelist_valid()` | Non-GBP instruments in GBX whitelist | Startup |
+| `validate_instruments_config()` | Duplicate config IDs, symbol ambiguity | Startup |
+
+These are called automatically in `scheduler.py` at critical points.
+
+### Layer 2: Integration Tests (`tests/test_integration_flow.py`)
+
+25 new tests covering:
+- Position ID mapping (IBKR symbol → config ID)
+- Glidepath blending (Day 0, Day 1, Day 10)
+- Price conversion (GBX only for GBP)
+- Order generation (no conflicts, correct IDs)
+- End-to-end scenarios
+
+Run with: `pytest tests/test_integration_flow.py -v`
+
+### Layer 3: Simulation Mode (`src/simulation.py`)
+
+Pre-deploy validation that runs full cycle without trading:
+
+```python
+from src.simulation import SimulationRunner, SimulationScenario
+
+runner = SimulationRunner(instruments_config)
+report = runner.run_predeploy_checks(positions, prices)
+
+if not report.all_passed:
+    print(report.summary())
+    # Don't deploy!
+```
+
+### What Each Layer Would Have Caught
+
+| Issue | Layer 1 | Layer 2 | Layer 3 |
+|-------|---------|---------|---------|
+| 17: Phantom positions | ✓ | ✓ | ✓ |
+| 19: Glidepath Day 0 | - | ✓ | ✓ |
+| 20: GBX whitelist | ✓ | ✓ | - |
+| 21: ID mapping | ✓ | ✓ | ✓ |
+
+---
+
 ## Commands for Debugging
 
 ```bash
