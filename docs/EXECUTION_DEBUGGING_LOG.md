@@ -6,20 +6,28 @@ This document captures lessons learned while debugging the trading engine execut
 
 | Symbol | Qty | Avg Cost | Market Price | Currency | Sleeve |
 |--------|-----|----------|--------------|----------|--------|
-| EXV1 | -87 | €34.29 | €34.37 | EUR | core_index_rv |
-| IUKD | -224 | £8.96 | £9.11 | GBP | core_index_rv |
-| M6E (Mar 26) | -3 | $14,742 | 1.1788 | USD | core_index_rv |
+| EXV1 | -174 | €34.34 | €34.51 | EUR | financials |
+| IUKD | -224 | £8.96 | £9.12 | GBP | core_index_rv |
+| M6E (Mar 26) | -3 | $14,742 | 1.178 | USD | core_index_rv |
+| CSPX | 4 | $730.29 | $730 | USD | us_index_etf |
+| LQDE | 6 | $103.05 | $103 | USD | ig_lqd |
+| IHYU | 4 | $95.80 | $96 | USD | hy_hyg |
+| FLOT | 62 | $5.04 | $5.03 | USD | loans_bkln |
 
 **Account Summary:**
-- NAV: $280,060
-- Broker NLV: $280,056
-- Cash (EUR): €243,939
-- Gross Exposure: $50,452 (18% of NAV)
-- Net Exposure: -$50,452 (short bias)
-- Total P&L: $41,977
-- Reconciliation: **PASS** (0.00% diff)
+- NAV: $280,079
+- Gross Exposure: $54,001 (19% of NAV)
+- Net Exposure: -$54,001 (short bias)
+- Reconciliation: **PASS**
+- Risk Regime: normal
+- Scaling Factor: 1.0
 
-**Note:** Portfolio was deleveraged from ~$800K gross exposure to ~$50K after executing sell orders on Dec 18. Most positions (CSPX, EXS1, FLOT, IHYU, IUHC, IUIT, IUQA, LQDE) were closed.
+**Glidepath Status:**
+- Day 1 of 10 (alpha = 0.10)
+- Blending 3 initial positions with 8 targets
+- 6 orders filled, 8 cancelled (hedge orders)
+
+**Note:** After fixing the GBX_QUOTED_ETFS bug (Issue 20), USD-denominated LSE ETFs are now trading correctly. Portfolio is gradually being built up via the 10-day glidepath.
 
 ---
 
@@ -689,6 +697,79 @@ if old_count != len(self.portfolio.positions):
 **File:** `src/scheduler.py:799-817`
 
 **Lesson:** Internal state must be **replaced** from broker on each sync, not accumulated. Stale state files can cause catastrophic NAV discrepancies.
+
+---
+
+### 19. Glidepath Day 0: Return Strategy Targets Instead of Current Positions
+
+**Date:** December 18, 2025
+
+**Symptom:** On first run (day 0), the glidepath returned original strategy targets instead of blocking all trades. This caused immediate position changes instead of preserving legacy positions.
+
+**Root Cause:** In `_apply_legacy_glidepath()`, the first-run code path returned `strategy_output` directly instead of creating a no-trade output that preserved current positions.
+
+**Fix:** Modified first-run handling to return empty orders and current positions as targets:
+```python
+# On first run (day 0), use current positions (NO TRADES)
+no_trade_output = StrategyOutput(
+    sleeve_targets=strategy_output.sleeve_targets,
+    total_target_positions=current_positions,  # Use current, not targets
+    orders=[],  # No orders on day 0
+    scaling_factor=strategy_output.scaling_factor,
+    regime=strategy_output.regime,
+    commentary=strategy_output.commentary +
+               f"\n[Glidepath Day 0: No trades, preserving {len(current_positions)} positions]"
+)
+```
+
+**File:** `src/scheduler.py:1110-1136`
+
+**Lesson:** The glidepath must protect legacy positions on day 0 by blocking ALL strategy orders, not by returning strategy targets.
+
+---
+
+### 20. GBX_QUOTED_ETFS: USD ETFs Incorrectly Divided by 100
+
+**Date:** December 18, 2025
+
+**Symptom:** Limit orders for USD-denominated LSE ETFs (CSPX, LQDE, IHYU, FLOT) were submitted at 1/100th of correct prices. IBKR rejected them with: "Order limit price is too far from market (probably because of currency units misuse)"
+
+| Symbol | Wrong Price | Correct Price | Market |
+|--------|-------------|---------------|--------|
+| CSPX | $7.30 | $730.29 | ~$730 |
+| LQDE | $1.03 | $103.05 | ~$103 |
+| IHYU | $0.96 | $95.80 | ~$96 |
+| FLOT | $0.05 | $5.04 | ~$5 |
+
+**Root Cause:** The `GBX_QUOTED_ETFS` whitelist in `data_feeds.py` incorrectly included USD-denominated ETFs. Only GBP-currency instruments need pence-to-pounds conversion:
+
+```python
+# WRONG - included USD instruments:
+GBX_QUOTED_ETFS = {
+    "CSPX", "CNDX", "IUIT", ..., "LQDE", "IHYU", "FLOT", ...
+}
+```
+
+**Fix:** Updated whitelist to only include GBP-currency instruments:
+```python
+# CORRECT - only GBP instruments:
+GBX_QUOTED_ETFS = {
+    "SMEA",   # GBP - iShares Core MSCI Europe
+    "IUKD",   # GBP - iShares UK Dividend
+    "IEAC",   # GBP - iShares Core Corp Bond
+    "IHYG",   # GBP - iShares Euro High Yield
+    # NOTE: Do NOT add USD ETFs like CSPX, LQDE, IHYU, FLOT!
+}
+```
+
+**Result after fix:**
+- Orders filled: 6 (up from 2)
+- All USD LSE ETFs now trading at correct prices
+- Average slippage: 6.3 bps
+
+**File:** `src/data_feeds.py:180-192`
+
+**Lesson:** The GBX (pence) conversion only applies to **GBP-currency** instruments. USD-denominated ETFs on LSE return prices in USD already and should NOT be divided by 100. Always check the instrument's currency field, not just the exchange.
 
 ---
 
