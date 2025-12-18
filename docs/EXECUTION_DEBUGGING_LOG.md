@@ -2,27 +2,24 @@
 
 This document captures lessons learned while debugging the trading engine execution pipeline.
 
-## Current Portfolio Status (Dec 17, 2025)
+## Current Portfolio Status (Dec 18, 2025)
 
 | Symbol | Qty | Avg Cost | Market Price | Currency | Sleeve |
 |--------|-----|----------|--------------|----------|--------|
-| CSPX | 933 | $738.48 | $727.99 | USD | core_index_rv |
-| EXS1 | -1,005 | €201.60 | €199.49 | EUR | core_index_rv |
-| EXV1 | -9 | €33.13 | €34.23 | EUR | core_index_rv |
-| FLOT | 652 | $5.05 | $5.03 | USD | core_index_rv |
-| IHYU | 157 | $95.80 | $95.59 | USD | core_index_rv |
-| IUHC | 15 | $12.86 | $12.32 | USD | core_index_rv |
-| IUIT | 4 | $43.73 | $41.03 | USD | core_index_rv |
-| IUKD | -224 | £8.96 | £9.15 | GBP | core_index_rv |
-| IUQA | 11 | $17.51 | $16.67 | USD | core_index_rv |
-| LQDE | 2 | $106.68 | $102.63 | USD | core_index_rv |
-| M6E (Mar 26) | -3 | $14,742 | 1.1794 | USD | core_index_rv |
+| EXV1 | -87 | €34.29 | €34.37 | EUR | core_index_rv |
+| IUKD | -224 | £8.96 | £9.11 | GBP | core_index_rv |
+| M6E (Mar 26) | -3 | $14,742 | 1.1788 | USD | core_index_rv |
 
 **Account Summary:**
-- NAV: $285,804
-- Net Liquidation: $243,283
-- Gross Exposure: $798,388
-- Unrealized P&L: ~$-13,400
+- NAV: $280,060
+- Broker NLV: $280,056
+- Cash (EUR): €243,939
+- Gross Exposure: $50,452 (18% of NAV)
+- Net Exposure: -$50,452 (short bias)
+- Total P&L: $41,977
+- Reconciliation: **PASS** (0.00% diff)
+
+**Note:** Portfolio was deleveraged from ~$800K gross exposure to ~$50K after executing sell orders on Dec 18. Most positions (CSPX, EXS1, FLOT, IHYU, IUHC, IUIT, IUQA, LQDE) were closed.
 
 ---
 
@@ -603,6 +600,58 @@ This computes everything (NAV, risk, targets, orders) but does not submit to IBK
 | High vol (24%) | scaling=0.5, panic sell | scaling=0.8 (clamped), gradual reduction |
 | Low vol (4%) | scaling=3.0, over-leverage | scaling=1.25 (clamped), modest increase |
 | Legacy positions | Immediate rebalance | 10-day glidepath blend |
+
+---
+
+## Position Sync Fix (December 18, 2025)
+
+### 17. NAV Reconciliation: Phantom Positions
+
+**Symptom:** `EMERGENCY STOP: NAV diff 164.04% > 1.00%` - Internal NAV ($739K) vs Broker NAV ($280K)
+
+**Root Cause:** `_sync_positions()` was **adding** broker positions to internal state without **removing** positions that no longer exist at the broker. This caused "phantom positions" to persist:
+
+```python
+# BEFORE (BUG): Only adds, never removes
+for inst_id, position in ib_positions.items():
+    self.portfolio.positions[inst_id] = position  # Accumulates!
+```
+
+The internal state had 11 positions (from stale `portfolio_state.json`) while the broker only had 3 real positions. The extra 8 phantom positions inflated internal NAV.
+
+**Fix:** Clear internal positions before syncing from broker:
+
+```python
+# AFTER (FIXED): Replace internal with broker positions
+old_count = len(self.portfolio.positions)
+self.portfolio.positions.clear()  # Remove all phantom positions
+
+for inst_id, position in ib_positions.items():
+    self.portfolio.positions[inst_id] = position
+
+if old_count != len(self.portfolio.positions):
+    logger.info("positions_synced_from_broker",
+                old_count=old_count,
+                new_count=len(self.portfolio.positions))
+```
+
+**Additional Actions:**
+- Deleted stale `state/portfolio_state.json` (contained 11 phantom positions)
+- Deleted stale `state/portfolio_init.json` (legacy glidepath snapshot with phantoms)
+
+**Result:**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Internal NAV | $739,464 | $280,060 |
+| Broker NAV | $280,062 | $280,056 |
+| Diff | 164.04% | **0.00%** |
+| Status | EMERGENCY | **PASS** |
+| Position count | 11 phantom | 3 real |
+
+**File:** `src/scheduler.py:799-817`
+
+**Lesson:** Internal state must be **replaced** from broker on each sync, not accumulated. Stale state files can cause catastrophic NAV discrepancies.
 
 ---
 
