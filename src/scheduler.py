@@ -456,7 +456,7 @@ class DailyScheduler:
 
                 # Sync positions from broker on fresh init
                 if self.ib_client and self.ib_client.is_connected():
-                    ib_positions = self.ib_client.get_positions()
+                    ib_positions = self.ib_client.get_positions(self.instruments)
                     for inst_id, position in ib_positions.items():
                         self.portfolio.positions[inst_id] = position
                     self.logger.logger.info(
@@ -796,7 +796,7 @@ class DailyScheduler:
         if not self.ib_client or not self.ib_client.is_connected():
             return
 
-        ib_positions = self.ib_client.get_positions()
+        ib_positions = self.ib_client.get_positions(self.instruments)
 
         # CRITICAL: Replace internal positions with broker positions
         # This prevents phantom positions from persisting in internal state

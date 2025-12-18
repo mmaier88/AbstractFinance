@@ -349,12 +349,16 @@ class IBClient:
 
         return summary
 
-    def get_positions(self) -> Dict[str, Position]:
+    def get_positions(self, instruments_config: Optional[Dict] = None) -> Dict[str, Position]:
         """
         Get current positions with real-time market prices.
 
         Uses ib.portfolio() which provides real-time prices from the broker
         without requiring a market data subscription.
+
+        Args:
+            instruments_config: Instrument configuration for reverse ID lookup.
+                               If provided, maps IBKR symbols to internal IDs.
 
         Returns:
             Dict mapping instrument_id to Position
@@ -371,7 +375,7 @@ class IBClient:
 
         for item in portfolio_items:
             contract = item.contract
-            instrument_id = self._contract_to_instrument_id(contract)
+            instrument_id = self._contract_to_instrument_id(contract, instruments_config)
 
             multiplier = float(contract.multiplier) if contract.multiplier else 1.0
 
@@ -427,17 +431,49 @@ class IBClient:
 
         return positions
 
-    def _contract_to_instrument_id(self, contract: Any) -> str:
-        """Convert IB contract to instrument ID."""
-        if contract.secType == "STK":
-            return f"{contract.symbol}"
-        elif contract.secType == "FUT":
-            return f"{contract.symbol}_{contract.lastTradeDateOrContractMonth}"
+    def _contract_to_instrument_id(self, contract: Any, instruments_config: Optional[Dict] = None) -> str:
+        """
+        Convert IB contract to internal instrument ID.
+
+        Uses reverse lookup from instruments_config to map IBKR symbols back to
+        internal IDs (e.g., CSPX -> us_index_etf, LQDE -> ig_lqd).
+
+        Args:
+            contract: IB Contract object
+            instruments_config: Instrument configuration for reverse lookup
+
+        Returns:
+            Internal instrument ID
+        """
+        ibkr_symbol = contract.symbol
+
+        # For futures, include expiry in the ID
+        if contract.secType == "FUT":
+            base_id = f"{ibkr_symbol}_{contract.lastTradeDateOrContractMonth}"
         elif contract.secType == "CASH":
-            return f"{contract.symbol}{contract.currency}"
+            base_id = f"{ibkr_symbol}{contract.currency}"
         elif contract.secType == "OPT":
-            return f"{contract.symbol}_{contract.strike}_{contract.right}_{contract.lastTradeDateOrContractMonth}"
-        return contract.symbol
+            base_id = f"{ibkr_symbol}_{contract.strike}_{contract.right}_{contract.lastTradeDateOrContractMonth}"
+        else:
+            base_id = ibkr_symbol
+
+        # Try reverse lookup: find internal ID that maps to this IBKR symbol
+        if instruments_config:
+            for category, instruments in instruments_config.items():
+                if isinstance(instruments, dict):
+                    for inst_id, spec in instruments.items():
+                        if isinstance(spec, dict):
+                            spec_symbol = spec.get('symbol', inst_id)
+                            # Match symbol and handle futures expiry
+                            if contract.secType == "FUT":
+                                # For futures, match base symbol (without expiry)
+                                if spec_symbol == ibkr_symbol:
+                                    return f"{inst_id}_{contract.lastTradeDateOrContractMonth}"
+                            elif spec_symbol == ibkr_symbol:
+                                return inst_id
+
+        # Fallback to derived ID if no mapping found
+        return base_id
 
     def build_contract(
         self,
