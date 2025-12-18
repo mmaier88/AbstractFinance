@@ -171,16 +171,22 @@ class TestInstrumentsConfigValidation:
         assert not is_valid
         assert any("Duplicate config ID" in e for e in errors)
 
-    def test_duplicate_symbol_detected(self):
-        """Duplicate symbols should be detected."""
-        invalid_config = {
+    def test_duplicate_symbol_warning(self):
+        """Duplicate symbols should produce warning (not error by default)."""
+        config_with_dupe = {
             "sleeve1": {
                 "inst1": {"symbol": "CSPX", "currency": "USD"},
                 "inst2": {"symbol": "CSPX", "currency": "USD"},  # Duplicate symbol!
             },
         }
-        is_valid, errors = validate_instruments_config(invalid_config)
-        assert not is_valid
+        # Default: warning only, still valid
+        is_valid, messages = validate_instruments_config(config_with_dupe)
+        assert is_valid  # Duplicate symbols are warnings, not errors
+        assert any("Duplicate symbol" in m for m in messages)
+
+        # Strict mode: fails on duplicate symbols
+        is_valid_strict, errors = validate_instruments_config(config_with_dupe, strict=True)
+        assert not is_valid_strict
         assert any("Duplicate symbol" in e for e in errors)
 
 

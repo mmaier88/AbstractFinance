@@ -177,22 +177,25 @@ def assert_gbx_whitelist_valid(
 
 def validate_instruments_config(
     instruments_config: Dict[str, Any],
+    strict: bool = False,
 ) -> Tuple[bool, List[str]]:
     """
     Validate instruments configuration for common issues.
 
     Checks:
-    1. All symbols are unique across sleeves
-    2. All config IDs are unique
-    3. No symbol matches another config ID (ambiguity)
+    1. All config IDs are unique (CRITICAL - always fails)
+    2. No symbol matches another config ID (CRITICAL - always fails)
+    3. All symbols are unique across sleeves (WARNING unless strict=True)
 
     Args:
         instruments_config: The instruments configuration dict
+        strict: If True, duplicate symbols also cause failure
 
     Returns:
         Tuple of (is_valid, list of error messages)
     """
     errors: List[str] = []
+    warnings: List[str] = []
 
     # Collect all IDs and symbols
     all_config_ids: Set[str] = set()
@@ -205,7 +208,7 @@ def validate_instruments_config(
             continue
 
         for inst_id, spec in instruments.items():
-            # Track config ID
+            # Track config ID - CRITICAL: must be unique
             if inst_id in all_config_ids:
                 errors.append(f"Duplicate config ID '{inst_id}' in sleeve '{sleeve}'")
             all_config_ids.add(inst_id)
@@ -215,14 +218,22 @@ def validate_instruments_config(
             if isinstance(spec, dict):
                 symbol = spec.get("symbol", inst_id)
                 if symbol in all_symbols and symbol != inst_id:
-                    errors.append(
+                    # Duplicate symbols are a warning by default
+                    # (same underlying in different sleeves may be intentional)
+                    msg = (
                         f"Duplicate symbol '{symbol}' in sleeve '{sleeve}' "
                         f"(previously in {symbol_locations[symbol]})"
                     )
+                    if strict:
+                        errors.append(msg)
+                    else:
+                        warnings.append(msg)
+                        logger.warning(f"Config warning: {msg}")
                 all_symbols.add(symbol)
                 symbol_locations[symbol].append(f"{sleeve}/{inst_id}")
 
     # Check for ambiguity: symbol matching config ID of different instrument
+    # This is CRITICAL because it causes ID mapping confusion
     for symbol in all_symbols:
         if symbol in all_config_ids:
             # Find which config ID this symbol belongs to
@@ -238,7 +249,7 @@ def validate_instruments_config(
                                 f"This can cause ID mapping confusion."
                             )
 
-    return len(errors) == 0, errors
+    return len(errors) == 0, errors + warnings
 
 
 def build_id_mappings(
