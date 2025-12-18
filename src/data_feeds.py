@@ -22,6 +22,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Import invariant checks (optional - graceful fallback if not available)
+try:
+    from .utils.invariants import assert_gbx_whitelist_valid, InvariantError
+    INVARIANTS_AVAILABLE = True
+except ImportError:
+    INVARIANTS_AVAILABLE = False
+
 
 @dataclass
 class DataQualityMetrics:
@@ -318,6 +325,18 @@ class DataFeed:
         # Build instrument lookup
         self._instruments: Dict[str, InstrumentSpec] = {}
         self._build_instrument_lookup()
+
+        # INVARIANT CHECK: Validate GBX whitelist at startup
+        if INVARIANTS_AVAILABLE and self.instruments_config:
+            try:
+                assert_gbx_whitelist_valid(
+                    self.GBX_QUOTED_ETFS,
+                    self.instruments_config,
+                    context="DataFeed initialization"
+                )
+            except InvariantError as e:
+                logger.error(f"GBX whitelist validation failed: {e}")
+                raise
 
     def _build_instrument_lookup(self) -> None:
         """Build instrument specification lookup from config."""

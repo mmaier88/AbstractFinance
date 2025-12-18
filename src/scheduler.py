@@ -27,6 +27,13 @@ from .healthcheck import start_health_server, get_health_server
 from .futures_rollover import check_and_roll_futures
 from .fx_rates import FXRates, get_fx_rates
 from .legacy_unwind import LegacyUnwindGlidepath, create_glidepath
+from .utils.invariants import (
+    assert_position_id_valid,
+    assert_no_conflicting_orders,
+    assert_gbx_whitelist_valid,
+    validate_instruments_config,
+    InvariantError,
+)
 
 # ROADMAP Phase A: Run Ledger for exactly-once execution
 try:
@@ -189,6 +196,14 @@ class DailyScheduler:
         self.instruments = load_instruments_config(instruments_path)
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
+
+        # INVARIANT CHECK: Validate instruments config at startup
+        config_valid, config_errors = validate_instruments_config(self.instruments)
+        if not config_valid:
+            raise InvariantError(
+                f"Invalid instruments config: {config_errors}. "
+                f"Fix config/instruments.yaml before running."
+            )
 
         # Set up logging
         log_file = self.state_dir / "logs" / f"trading_{date.today().isoformat()}.log"
@@ -805,6 +820,21 @@ class DailyScheduler:
         self.portfolio.positions.clear()
 
         for inst_id, position in ib_positions.items():
+            # INVARIANT CHECK: Position ID must be a config ID, not IBKR symbol
+            try:
+                assert_position_id_valid(
+                    inst_id,
+                    self.instruments,
+                    context=f"position_sync: {position.quantity} @ {position.market_price}"
+                )
+            except InvariantError as e:
+                self.logger.logger.error(
+                    "position_id_invariant_violation",
+                    error=str(e),
+                    instrument_id=inst_id,
+                )
+                raise  # Fail fast - this is a critical bug
+
             self.portfolio.positions[inst_id] = position
 
         new_position_count = len(self.portfolio.positions)
@@ -1213,6 +1243,20 @@ class DailyScheduler:
 
         ENGINE_FIX_PLAN Phase 9: Includes pre-execution safety checks.
         """
+        # INVARIANT CHECK: No conflicting BUY/SELL for same instrument
+        try:
+            assert_no_conflicting_orders(
+                orders,
+                context=f"execute_orders: {len(orders)} orders"
+            )
+        except InvariantError as e:
+            self.logger.logger.error(
+                "conflicting_orders_invariant_violation",
+                error=str(e),
+                order_count=len(orders),
+            )
+            raise  # Fail fast - this indicates an ID mapping bug
+
         # ENGINE_FIX_PLAN Phase 9: Pre-execution safety checks
         safety_passed, safety_reasons = check_execution_safety(
             portfolio_state=self.portfolio,
