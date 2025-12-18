@@ -73,8 +73,14 @@ class BrokerTransport:
         self,
         broker_order_id: int,
         new_limit_price: float,
-    ) -> bool:
-        """Modify order limit price. Returns success."""
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Modify order limit price (cancel/replace).
+
+        Returns:
+            Tuple of (success, new_broker_order_id)
+            new_broker_order_id is the ID of the replacement order, or None if failed
+        """
         raise NotImplementedError
 
     def get_order_status(self, broker_order_id: int) -> Optional[OrderUpdate]:
@@ -387,18 +393,31 @@ class OrderManager:
             f"{ticket.plan.limit_price} -> {new_limit}"
         )
 
+        old_broker_id = ticket.broker_order_id
         ticket.status = OrderStatus.PENDING_REPLACE
         ticket.replace_count += 1
         ticket.last_replace_at = datetime.now()
 
-        success = self.transport.modify_order(
+        success, new_broker_id = self.transport.modify_order(
             ticket.broker_order_id,
             new_limit,
         )
 
-        if success:
+        if success and new_broker_id is not None:
+            # Update ticket with new broker order ID
+            ticket.broker_order_id = new_broker_id
             ticket.plan.limit_price = new_limit
             ticket.status = OrderStatus.SUBMITTED
+
+            # Update our mappings
+            if old_broker_id in self.broker_to_ticket:
+                del self.broker_to_ticket[old_broker_id]
+            self.broker_to_ticket[new_broker_id] = ticket.ticket_id
+
+            logger.info(
+                f"Order {ticket.ticket_id} replaced: "
+                f"broker_id {old_broker_id} -> {new_broker_id}"
+            )
         else:
             logger.warning(f"Replace failed for {ticket.ticket_id}")
             ticket.status = OrderStatus.SUBMITTED  # Revert status

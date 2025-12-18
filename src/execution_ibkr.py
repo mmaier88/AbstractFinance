@@ -1021,29 +1021,64 @@ class IBKRTransport:
         self,
         broker_order_id: int,
         new_limit_price: float,
-    ) -> bool:
+    ) -> Tuple[bool, Optional[int]]:
         """
-        Modify order limit price (cancel/replace).
+        Modify order limit price using cancel/replace pattern.
+
+        IBKR doesn't support true order modification for most order types.
+        We cancel the existing order and submit a new one.
 
         Args:
             broker_order_id: IBKR order ID
             new_limit_price: New limit price
 
         Returns:
-            True if modification was sent
+            Tuple of (success, new_broker_order_id)
+            new_broker_order_id is the ID of the replacement order, or None if failed
         """
         trade = self._active_trades.get(broker_order_id)
         if not trade:
-            return False
+            return False, None
 
         try:
-            # Modify by updating order object and re-placing
-            trade.order.lmtPrice = new_limit_price
-            self.ib_client.ib.placeOrder(trade.contract, trade.order)
-            return True
+            # Store order details before cancelling
+            contract = trade.contract
+            original_order = trade.order
+            side = original_order.action
+            quantity = original_order.totalQuantity
+            tif = original_order.tif
+
+            # Cancel the existing order
+            self.ib_client.ib.cancelOrder(original_order)
+            self.ib_client.ib.sleep(0.5)  # Wait for cancel to process
+
+            # Remove from active trades
+            del self._active_trades[broker_order_id]
+
+            # Create new order with new ID
+            new_order = LimitOrder(
+                action=side,
+                totalQuantity=quantity,
+                lmtPrice=new_limit_price,
+                tif=tif,
+            )
+
+            # Submit new order
+            new_trade = self.ib_client.ib.placeOrder(contract, new_order)
+            new_order_id = new_trade.order.orderId
+
+            # Track the new trade
+            self._active_trades[new_order_id] = new_trade
+
+            self.logger.logger.info(
+                f"Order replaced: {broker_order_id} -> {new_order_id} @ {new_limit_price}"
+            )
+
+            return True, new_order_id
+
         except Exception as e:
             self.logger.logger.warning(f"Modify failed for order {broker_order_id}: {e}")
-            return False
+            return False, None
 
     def get_order_status(self, broker_order_id: int) -> Optional['OrderUpdate']:
         """

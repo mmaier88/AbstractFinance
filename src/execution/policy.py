@@ -374,11 +374,18 @@ class ExecutionPolicy:
                 collar_price = ref * (1.0 - max_slip)
                 return max(aggressive_price, collar_price)
         else:
-            # No quotes - use reference with collar
+            # No quotes available - be MORE aggressive to ensure fills
+            # Without quotes, we don't know the actual spread, so assume it could be wide
+            # Use 2x the normal slippage to account for unknown spread
+            # This is safer than not filling at all
+            aggressive_slip = max_slip * 2.0
+
             if side == "BUY":
-                return ref * (1.0 + max_slip)
+                # For buys, pay up to ref + 2x slippage to cross unknown spread
+                return ref * (1.0 + aggressive_slip)
             else:
-                return ref * (1.0 - max_slip)
+                # For sells, accept down to ref - 2x slippage
+                return ref * (1.0 - aggressive_slip)
 
     def _calculate_collar(
         self,
