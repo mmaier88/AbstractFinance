@@ -212,8 +212,9 @@ class BasketExecutor:
         Priority rules:
         1. Crisis urgency first
         2. Futures first (fast hedging)
-        3. Then by liquidity tier
-        4. Then by notional (largest first for efficient execution)
+        3. SELLS before BUYS (frees margin for subsequent buys)
+        4. Then by liquidity tier
+        5. Then by notional (largest first for efficient execution)
 
         Args:
             net_positions: Positions to order
@@ -241,13 +242,16 @@ class BasketExecutor:
                 "STK": 3,
             }.get(asset_class, 3)
 
+            # Side: SELL before BUY (frees up margin for subsequent buys)
+            side_score = 0 if pos.side == "SELL" else 1
+
             # Liquidity tier
             liquidity_tier = spec.liquidity_tier if spec else 2
 
             # Notional (negative for descending order)
             notional_score = -pos.notional_usd
 
-            return (urgency_score, asset_score, liquidity_tier, notional_score)
+            return (urgency_score, asset_score, side_score, liquidity_tier, notional_score)
 
         return sorted(net_positions, key=priority_key)
 
