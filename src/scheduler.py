@@ -797,10 +797,24 @@ class DailyScheduler:
             return
 
         ib_positions = self.ib_client.get_positions()
-        # Convert to format expected by portfolio
-        # This is a simplified sync - in production would be more robust
+
+        # CRITICAL: Replace internal positions with broker positions
+        # This prevents phantom positions from persisting in internal state
+        # when they no longer exist at the broker (e.g., closed trades, rollovers)
+        old_position_count = len(self.portfolio.positions)
+        self.portfolio.positions.clear()
+
         for inst_id, position in ib_positions.items():
             self.portfolio.positions[inst_id] = position
+
+        new_position_count = len(self.portfolio.positions)
+        if old_position_count != new_position_count:
+            self.logger.logger.info(
+                "positions_synced_from_broker",
+                old_count=old_position_count,
+                new_count=new_position_count,
+                synced_positions=list(ib_positions.keys())
+            )
 
         # Sync cash balances from IB (critical for accurate NAV)
         self._sync_cash_from_ib()
