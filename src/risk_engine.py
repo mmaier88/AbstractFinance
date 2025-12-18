@@ -917,6 +917,19 @@ class RiskEngine:
         # This ensures we respect BOTH volatility constraints AND regime constraints
         scaling_factor = min(vol_scaling, state_scaling)
 
+        # BURN-IN PROTECTION: During burn-in period, clamp FINAL scaling
+        # This prevents aggressive deleveraging when we have no volatility history
+        # Without this, crisis regime (0.3) would trump burn-in (1.0) and cause
+        # immediate liquidation of legacy positions
+        burn_in_active = scaling_diagnostics.get('burn_in_active', False)
+        if burn_in_active:
+            pre_clamp = scaling_factor
+            scaling_factor = np.clip(scaling_factor, self.min_scaling_factor, self.max_scaling_factor)
+            if scaling_factor != pre_clamp:
+                scaling_diagnostics['burn_in_final_clamp_applied'] = True
+                scaling_diagnostics['burn_in_pre_clamp_scaling'] = pre_clamp
+                warnings.append(f"Burn-in protection: scaling clamped from {pre_clamp:.2f} to {scaling_factor:.2f}")
+
         # Emergency de-risk check (Phase 8: sets floor, not multiplier)
         emergency_derisk = current_dd <= -self.max_drawdown_pct
         if emergency_derisk:
