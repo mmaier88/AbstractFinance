@@ -795,7 +795,7 @@ class DailyScheduler:
 
             # Step 8.5: Post-order reconciliation check (80/20 improvement)
             # Re-sync positions from IBKR and verify they match expectations
-            if execution_results.get("filled", 0) > 0 and not dry_run:
+            if execution_results.get("filled", 0) > 0 and not self.dry_run:
                 self.logger.logger.info("post_order_reconciliation_start")
                 try:
                     # Wait for IBKR to settle
