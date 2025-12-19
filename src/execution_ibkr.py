@@ -48,6 +48,16 @@ US_MARKET_CLOSE = dt_time(16, 0)  # 4:00 PM ET
 EU_MARKET_OPEN = dt_time(9, 0)  # 9:00 AM CET
 EU_MARKET_CLOSE = dt_time(17, 30)  # 5:30 PM CET
 
+# GBP-denominated LSE ETFs quoted in pence (GBX) by IBKR
+# Prices must be converted: GBP -> pence (multiply by 100) for orders
+# This list must match GBX_QUOTED_ETFS in data_feeds.py
+GBX_QUOTED_SYMBOLS = {
+    "SMEA",   # iShares Core MSCI Europe UCITS ETF - GBP
+    "IUKD",   # iShares UK Dividend UCITS ETF - GBP
+    "IEAC",   # iShares Core Corp Bond UCITS ETF - GBP
+    "IHYG",   # iShares Euro High Yield Corp Bond UCITS ETF - GBP
+}
+
 # Metrics integration
 try:
     from .metrics import (
@@ -525,20 +535,28 @@ class IBClient:
                 contract = Stock(symbol, exchange, currency)
 
         elif sec_type == 'FUT':
-            # Calculate front month expiry (YYYYMM format)
-            from datetime import date
-            today = date.today()
-            # Use next month if we're past the 15th, otherwise current month
-            if today.day > 15:
-                month = today.month + 1
-                year = today.year
-                if month > 12:
-                    month = 1
-                    year += 1
+            import re
+            # Check if instrument_id contains an expiry suffix (YYYYMMDD format)
+            expiry_match = re.search(r'_(\d{8})$', instrument_id)
+            if expiry_match:
+                # Use expiry from instrument_id (convert YYYYMMDD to YYYYMM for IBKR)
+                full_expiry = expiry_match.group(1)
+                expiry = full_expiry[:6]  # YYYYMM
             else:
-                month = today.month
-                year = today.year
-            expiry = f"{year}{month:02d}"
+                # Calculate front month expiry (YYYYMM format)
+                from datetime import date
+                today = date.today()
+                # Use next month if we're past the 15th, otherwise current month
+                if today.day > 15:
+                    month = today.month + 1
+                    year = today.year
+                    if month > 12:
+                        month = 1
+                        year += 1
+                else:
+                    month = today.month
+                    year = today.year
+                expiry = f"{year}{month:02d}"
             # Include currency to avoid ambiguity (e.g. M6E requires currency)
             contract = Future(symbol, exchange=exchange, currency=currency, lastTradeDateOrContractMonth=expiry)
 
@@ -569,7 +587,12 @@ class IBClient:
         instrument_id: str,
         instruments_config: Dict
     ) -> Optional[Dict]:
-        """Find instrument specification in config."""
+        """Find instrument specification in config.
+
+        Handles instrument IDs with expiry suffixes (e.g., eurusd_micro_20260316)
+        by stripping the suffix to find the base instrument.
+        """
+        # First try exact match
         for category, instruments in instruments_config.items():
             if isinstance(instruments, dict):
                 if instrument_id in instruments:
@@ -577,6 +600,21 @@ class IBClient:
                 for inst_key, spec in instruments.items():
                     if isinstance(spec, dict) and spec.get('symbol') == instrument_id:
                         return spec
+
+        # For futures with expiry suffix (e.g., eurusd_micro_20260316), try base ID
+        # Pattern: base_id_YYYYMMDD where YYYYMMDD is 8 digits
+        import re
+        match = re.match(r'^(.+)_(\d{8})$', instrument_id)
+        if match:
+            base_id = match.group(1)
+            for category, instruments in instruments_config.items():
+                if isinstance(instruments, dict):
+                    if base_id in instruments:
+                        return instruments[base_id]
+                    for inst_key, spec in instruments.items():
+                        if isinstance(spec, dict) and spec.get('symbol') == base_id:
+                            return spec
+
         return None
 
     def place_order(
@@ -624,12 +662,24 @@ class IBClient:
         action = order_spec.side
         quantity = order_spec.quantity
 
+        # Convert prices for GBX-quoted instruments (GBP -> pence)
+        limit_price = order_spec.limit_price
+        stop_price = order_spec.stop_price
+        if contract.symbol in GBX_QUOTED_SYMBOLS:
+            if limit_price is not None:
+                limit_price = round(limit_price * 100, 2)  # GBP to pence
+                self.logger.logger.debug(
+                    f"Converted {contract.symbol} limit price: {order_spec.limit_price} GBP -> {limit_price} pence"
+                )
+            if stop_price is not None:
+                stop_price = round(stop_price * 100, 2)
+
         if order_spec.order_type == "MKT":
             order = MarketOrder(action, quantity)
         elif order_spec.order_type == "LMT":
-            order = LimitOrder(action, quantity, order_spec.limit_price)
+            order = LimitOrder(action, quantity, limit_price)
         elif order_spec.order_type == "STP":
-            order = StopOrder(action, quantity, order_spec.stop_price)
+            order = StopOrder(action, quantity, stop_price)
         else:
             order = MarketOrder(action, quantity)
 
@@ -993,13 +1043,21 @@ class IBKRTransport:
         if not contract:
             raise ValueError(f"Could not build contract for {instrument_id}")
 
+        # Convert prices for GBX-quoted instruments (GBP -> pence)
+        adjusted_limit_price = limit_price
+        if contract.symbol in GBX_QUOTED_SYMBOLS and limit_price is not None:
+            adjusted_limit_price = round(limit_price * 100, 2)  # GBP to pence
+            self.logger.logger.debug(
+                f"Converted {contract.symbol} limit price: {limit_price} GBP -> {adjusted_limit_price} pence"
+            )
+
         # Build order
         if order_type.upper() == "MKT":
             order = MarketOrder(side, quantity)
         elif order_type.upper() == "LMT":
-            order = LimitOrder(side, quantity, limit_price)
+            order = LimitOrder(side, quantity, adjusted_limit_price)
         else:
-            order = LimitOrder(side, quantity, limit_price)
+            order = LimitOrder(side, quantity, adjusted_limit_price)
 
         # Set TIF
         order.tif = tif
@@ -1095,11 +1153,19 @@ class IBKRTransport:
             # Remove from active trades
             del self._active_trades[broker_order_id]
 
+            # Convert price for GBX-quoted instruments (GBP -> pence)
+            adjusted_limit_price = new_limit_price
+            if contract.symbol in GBX_QUOTED_SYMBOLS:
+                adjusted_limit_price = round(new_limit_price * 100, 2)
+                self.logger.logger.debug(
+                    f"Converted {contract.symbol} limit price: {new_limit_price} GBP -> {adjusted_limit_price} pence"
+                )
+
             # Create new order with new ID
             new_order = LimitOrder(
                 action=side,
                 totalQuantity=quantity,
-                lmtPrice=new_limit_price,
+                lmtPrice=adjusted_limit_price,
                 tif=tif,
             )
 

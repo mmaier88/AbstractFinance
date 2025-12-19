@@ -1068,6 +1068,104 @@ if spec and spec.get('tradeable') is False:
 
 ---
 
+### 26. Futures with Expiry Suffix Not Found in Config
+
+**Date:** December 19, 2025 (09:17 UTC run)
+
+**Symptom:** `Could not build contract for M6E_20260316`
+
+**Root Cause:** The `_find_instrument_spec()` function only searches for exact instrument_id matches. When a position has an expiry suffix (e.g., `eurusd_micro_20260316`), it fails to find the base config (`eurusd_micro`).
+
+**Fix:** Enhanced `_find_instrument_spec()` to strip expiry suffixes and retry lookup:
+```python
+# For futures with expiry suffix (e.g., eurusd_micro_20260316), try base ID
+import re
+match = re.match(r'^(.+)_(\d{8})$', instrument_id)
+if match:
+    base_id = match.group(1)
+    # Retry lookup with base_id
+```
+
+Also updated `build_contract()` to extract expiry from instrument_id for futures:
+```python
+expiry_match = re.search(r'_(\d{8})$', instrument_id)
+if expiry_match:
+    full_expiry = expiry_match.group(1)
+    expiry = full_expiry[:6]  # YYYYMM for IBKR
+```
+
+**Files:**
+- `src/execution_ibkr.py:567-600, 527-551`
+
+---
+
+### 27. IUKD Order Rejected - Price Units Mismatch (GBP vs Pence)
+
+**Date:** December 19, 2025 (09:17 UTC run)
+
+**Symptom:** `Order Canceled - reason: Order limit price is too far from market (probably because of currency units misuse)`
+
+**Error Details:** Order submitted with limit price 9.09 GBP, but IBKR expects pence (909).
+
+**Root Cause:** The data feed correctly converts IBKR pence to GBP for internal use, but the execution engine was not converting back to pence when placing orders.
+
+**Fix:** Added `GBX_QUOTED_SYMBOLS` constant and price conversion in execution:
+```python
+GBX_QUOTED_SYMBOLS = {"SMEA", "IUKD", "IEAC", "IHYG"}
+
+# In place_order and submit_order:
+if contract.symbol in GBX_QUOTED_SYMBOLS and limit_price is not None:
+    limit_price = round(limit_price * 100, 2)  # GBP to pence
+```
+
+**Files:**
+- `src/execution_ibkr.py:51-59, 665-675, 1046-1052, 1156-1162`
+
+---
+
+### 28. EU Index ETF (CS51) Not Found on XETRA
+
+**Date:** December 19, 2025 (09:17 UTC run)
+
+**Symptom:** `Error 200: No security definition has been found for the request`
+
+**Root Cause:** CS51 is the LSE symbol for iShares Core Euro STOXX 50 ETF. The XETRA symbol is EXS1.
+
+**Fix:** Updated instruments.yaml:
+```yaml
+eu_index_etf:
+  symbol: "EXS1"  # Changed from CS51 (LSE symbol)
+  exchange: "XETRA"
+```
+
+**Files:**
+- `config/instruments.yaml:40-46`
+
+---
+
+### 29. Missing hyg_put Placeholder Configuration
+
+**Date:** December 19, 2025 (09:17 UTC run)
+
+**Symptom:** `Could not build contract for hyg_put`
+
+**Root Cause:** The `hyg_put` option hedge was referenced in strategy logic but not configured in instruments.yaml with `tradeable: false`.
+
+**Fix:** Added hyg_put placeholder to option_hedges section:
+```yaml
+hyg_put:
+  symbol: "HYG"
+  exchange: "SMART"
+  sec_type: "STK"
+  tradeable: false
+  description: "HYG Put Option placeholder - prices via HYG ETF"
+```
+
+**Files:**
+- `config/instruments.yaml:480-489`
+
+---
+
 ## Systemic Issues Identified (December 19, 2025)
 
 ### Pattern 1: Exception Handling Gaps

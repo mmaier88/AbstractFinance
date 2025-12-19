@@ -38,7 +38,7 @@ equity_indices:
     description: "Euro STOXX 50 Future"
 
   eu_index_etf:
-    symbol: "CS51"
+    symbol: "EXS1"              # CS51 is LSE symbol; EXS1 is XETRA symbol
     exchange: "XETRA"
     sec_type: "STK"
     currency: "EUR"
@@ -476,6 +476,17 @@ option_hedges:
     option_type: "PUT"
     tradeable: false            # Placeholder only - skip during execution
     description: "EU Banks Put Option placeholder - prices via SX7E index"
+
+  hyg_put:
+    symbol: "HYG"               # iShares High Yield Corporate Bond ETF
+    exchange: "SMART"
+    sec_type: "STK"             # ETF for pricing
+    currency: "USD"
+    multiplier: 100.0
+    underlying_index: "HYG"
+    option_type: "PUT"
+    tradeable: false            # Placeholder only - skip during execution
+    description: "HYG Put Option placeholder - prices via HYG ETF"
 
 europe_vol_structures:
   # EURO STOXX 50 Options (OESX) - PRIMARY for Europe insurance puts
