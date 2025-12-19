@@ -1426,16 +1426,20 @@ class DailyScheduler:
         prices = {}
 
         # Build fallback prices from portfolio positions (IBKR already provides market prices)
-        # Portfolio positions use IBKR symbols (e.g., "CSPX") while orders may use config IDs (e.g., "us_index_etf")
+        # Portfolio positions use config IDs (e.g., "value_ewu") or IBKR symbols (e.g., "IUKD")
         # IMPORTANT: Apply price conversion for GBX symbols (pence -> GBP) to ensure internal consistency
         position_prices = {}
         if hasattr(self, 'portfolio') and self.portfolio:
             for pos in self.portfolio.positions.values():
                 if pos.market_price and pos.market_price > 0:
                     # Convert GBX prices (pence) to GBP for internal consistency
+                    # Need to find the IBKR symbol for this position to check if it's GBX-quoted
                     price = pos.market_price
                     if hasattr(self, '_price_converter') and self._price_converter:
-                        price = self._price_converter.from_broker(pos.instrument_id, price)
+                        # Try to get the IBKR symbol from the config spec
+                        spec = self._find_instrument_spec(pos.instrument_id)
+                        symbol = spec.get('symbol', pos.instrument_id) if spec else pos.instrument_id
+                        price = self._price_converter.from_broker(symbol, price)
                     position_prices[pos.instrument_id] = price
 
         # Build reverse mapping: config instrument_id -> IBKR symbol
