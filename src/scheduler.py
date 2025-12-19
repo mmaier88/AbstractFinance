@@ -547,13 +547,22 @@ class DailyScheduler:
                         return spec
         return None
 
-    def run_daily(self) -> Dict[str, Any]:
+    def run_daily(self, run_config: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute the daily trading routine.
+
+        Args:
+            run_config: Optional config for this specific run, containing:
+                - name: Run name (e.g., "EU_open", "US_open")
+                - exchanges: List of target exchanges for this run
 
         Returns:
             Summary of daily run
         """
+        # Store current run config for use in order execution
+        self._current_run_config = run_config
+        self._target_exchanges = run_config.get('exchanges', []) if run_config else []
+
         run_summary = {
             "date": date.today().isoformat(),
             "mode": self.mode,
@@ -565,7 +574,9 @@ class DailyScheduler:
             "orders_filled": 0,
             "maintenance_window": False,
             "fx_rates_valid": False,
-            "reconciliation_status": "NOT_CHECKED"
+            "reconciliation_status": "NOT_CHECKED",
+            "run_name": run_config.get('name', 'daily') if run_config else 'daily',
+            "target_exchanges": self._target_exchanges,
         }
 
         if self.dry_run:
@@ -1391,6 +1402,7 @@ class DailyScheduler:
             "cancelled": 0,
             "netted_orders": 0,
             "skipped_timing": 0,
+            "deferred_market_closed": 0,
             "total_commission": 0.0,
             "avg_slippage_bps": 0.0,
             "execution_stack": True,
@@ -1399,27 +1411,138 @@ class DailyScheduler:
         if not orders:
             return summary
 
-        # Step 1: Check session timing
-        exchange = "NYSE"  # Default exchange for timing check
-        if self.market_calendar:
-            avoid_result, avoid_reason = should_avoid_trading(
-                exchange=exchange,
-                avoid_first_minutes=self.execution_config.avoid_first_minutes_after_open,
-                avoid_last_minutes=self.execution_config.avoid_last_minutes_before_close,
-            )
-            if avoid_result:
-                self.logger.logger.warning(
-                    "execution_postponed_timing",
-                    extra={"reason": avoid_reason, "order_count": len(orders)}
-                )
-                summary["skipped_timing"] = len(orders)
-                # Still return - orders will execute next run
-                return summary
+        # Include deferred orders from previous runs that match current target exchanges
+        if hasattr(self, '_deferred_orders') and self._deferred_orders:
+            target_exchanges = getattr(self, '_target_exchanges', [])
+            if target_exchanges:
+                # Filter deferred orders that match current run's target exchanges
+                matching_deferred = []
+                still_deferred = []
+                for order in self._deferred_orders:
+                    spec = self._find_instrument_spec(order.instrument_id)
+                    if spec:
+                        order_exchange = spec.get('exchange', 'NYSE')
+                        if order_exchange in target_exchanges:
+                            matching_deferred.append(order)
+                            self.logger.logger.info(
+                                "including_deferred_order",
+                                extra={
+                                    "instrument": order.instrument_id,
+                                    "exchange": order_exchange,
+                                    "side": order.side,
+                                    "qty": order.quantity,
+                                }
+                            )
+                        else:
+                            still_deferred.append(order)
+                    else:
+                        matching_deferred.append(order)  # Unknown exchange, try now
 
-            # Get current session phase
-            session_phase = get_session_phase(exchange)
-        else:
-            session_phase = "regular"
+                if matching_deferred:
+                    orders = list(orders) + matching_deferred
+                    summary["deferred_orders_included"] = len(matching_deferred)
+                self._deferred_orders = still_deferred
+            else:
+                # No target exchanges = legacy mode, include all deferred
+                orders = list(orders) + self._deferred_orders
+                summary["deferred_orders_included"] = len(self._deferred_orders)
+                self._deferred_orders = []
+
+        # Step 1: Filter orders by exchange market hours and target exchanges
+        # Each instrument trades on a specific exchange - only execute if:
+        # 1. The market is open AND
+        # 2. The exchange is in this run's target list (if specified)
+        executable_orders = []
+        deferred_orders = []
+        target_exchanges = getattr(self, '_target_exchanges', [])
+
+        for order in orders:
+            spec = self._find_instrument_spec(order.instrument_id)
+            if not spec:
+                # Can't determine exchange, try to execute anyway
+                executable_orders.append(order)
+                continue
+
+            # Determine the exchange for this instrument
+            exchange = spec.get('exchange', 'NYSE')
+
+            # Map common exchange aliases to calendar-recognized names
+            exchange_mapping = {
+                'LSE': 'LSE',
+                'LSEETF': 'LSE',
+                'XETRA': 'XETRA',
+                'IBIS': 'XETRA',
+                'NYSE': 'NYSE',
+                'NASDAQ': 'NYSE',  # Use NYSE calendar for all US equities
+                'SMART': 'NYSE',   # SMART routing typically US
+                'CME': 'CME',
+                'GLOBEX': 'CME',
+            }
+            calendar_exchange = exchange_mapping.get(exchange, 'NYSE')
+
+            # Check if this exchange is in the current run's target list
+            # If target_exchanges is empty, allow all exchanges (legacy behavior)
+            if target_exchanges and exchange not in target_exchanges:
+                deferred_orders.append((order, exchange, f"Not in target exchanges for this run"))
+                continue
+
+            # Check if this exchange is open
+            if self.market_calendar:
+                avoid_result, avoid_reason = should_avoid_trading(
+                    exchange=calendar_exchange,
+                    avoid_first_minutes=self.execution_config.avoid_first_minutes_after_open,
+                    avoid_last_minutes=self.execution_config.avoid_last_minutes_before_close,
+                )
+                if avoid_result:
+                    deferred_orders.append((order, exchange, avoid_reason))
+                    continue
+
+            executable_orders.append(order)
+
+        # Log deferred orders
+        if deferred_orders:
+            deferred_by_exchange = {}
+            for order, exch, reason in deferred_orders:
+                if exch not in deferred_by_exchange:
+                    deferred_by_exchange[exch] = []
+                deferred_by_exchange[exch].append(order.instrument_id)
+
+            for exch, instruments in deferred_by_exchange.items():
+                self.logger.logger.info(
+                    "orders_deferred",
+                    extra={
+                        "exchange": exch,
+                        "reason": f"Will execute in later run for {exch}",
+                        "count": len(instruments),
+                        "instruments": instruments[:5],  # Log first 5
+                    }
+                )
+
+            summary["deferred_market_closed"] = len(deferred_orders)
+
+            # Store deferred orders for retry at next run
+            if not hasattr(self, '_deferred_orders'):
+                self._deferred_orders = []
+            self._deferred_orders.extend([o for o, _, _ in deferred_orders])
+
+        # Replace orders with only executable ones
+        orders = executable_orders
+
+        if not orders:
+            self.logger.logger.info(
+                "no_orders_executable",
+                extra={
+                    "deferred": len(deferred_orders),
+                    "target_exchanges": target_exchanges,
+                }
+            )
+            return summary
+
+        # Get session phase for the first executable order's exchange
+        # (used for execution policy decisions)
+        first_spec = self._find_instrument_spec(orders[0].instrument_id) if orders else None
+        first_exchange = first_spec.get('exchange', 'NYSE') if first_spec else 'NYSE'
+        session_phase = get_session_phase(first_exchange) if self.market_calendar else "regular"
 
         # Step 2: Convert OrderSpec to OrderIntent
         intents = []
@@ -1790,7 +1913,13 @@ class DailyScheduler:
 class ContinuousScheduler:
     """
     Runs the DailyScheduler on a continuous schedule.
-    Executes the daily run at the configured time each day.
+    Executes the daily run at the configured times each day.
+
+    Supports multiple run times per day, each targeting specific exchanges:
+    - EU_open: 9:00 UTC for LSE, XETRA
+    - US_open: 14:45 UTC for NYSE, NASDAQ, CME
+
+    Orders deferred due to market closure are included in subsequent runs.
     """
 
     # Startup delay to wait for IB Gateway to be ready
@@ -1806,13 +1935,25 @@ class ContinuousScheduler:
         self.running = True
         self.scheduler: Optional[DailyScheduler] = None
         self.last_run_date: Optional[date] = None
+        self.completed_runs_today: set = set()  # Track which run names completed today
 
         # Load settings for schedule config
         settings = load_settings("config/settings.yaml")
         schedule_config = settings.get('schedule', {})
-        self.run_hour = schedule_config.get('run_hour_utc', 6)
-        self.run_minute = schedule_config.get('run_minute_utc', 0)
         self.timezone = pytz.timezone(schedule_config.get('timezone', 'UTC'))
+
+        # Load multiple run times if configured, otherwise use legacy single time
+        self.run_times = schedule_config.get('run_times', [])
+        if not self.run_times:
+            # Legacy fallback: single run time
+            self.run_times = [{
+                'name': 'daily',
+                'hour_utc': schedule_config.get('run_hour_utc', 6),
+                'minute_utc': schedule_config.get('run_minute_utc', 0),
+                'exchanges': []  # Empty = all exchanges
+            }]
+
+        print(f"Configured run times: {[rt['name'] for rt in self.run_times]}")
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -1823,40 +1964,77 @@ class ContinuousScheduler:
         print(f"Received signal {signum}, shutting down...")
         self.running = False
 
-    def _should_run_now(self) -> bool:
-        """Check if it's time to run the daily job."""
+    def _should_run_now(self) -> tuple:
+        """
+        Check if it's time to run a scheduled job.
+
+        Returns:
+            Tuple of (should_run: bool, run_config: dict or None)
+            run_config contains 'name', 'hour_utc', 'minute_utc', 'exchanges'
+        """
         now = datetime.now(pytz.UTC)
         today = now.date()
 
-        # Don't run if we already ran today
-        if self.last_run_date == today:
-            return False
+        # Reset completed runs on new day
+        if self.last_run_date != today:
+            self.completed_runs_today = set()
+            self.last_run_date = today
 
-        # Check if we're past the scheduled time
-        scheduled_time = now.replace(
-            hour=self.run_hour,
-            minute=self.run_minute,
-            second=0,
-            microsecond=0
-        )
+        # Check each configured run time
+        for run_config in self.run_times:
+            run_name = run_config.get('name', 'default')
 
-        return now >= scheduled_time
+            # Skip if already completed this run today
+            if run_name in self.completed_runs_today:
+                continue
+
+            scheduled_time = now.replace(
+                hour=run_config['hour_utc'],
+                minute=run_config['minute_utc'],
+                second=0,
+                microsecond=0
+            )
+
+            if now >= scheduled_time:
+                return (True, run_config)
+
+        return (False, None)
 
     def _seconds_until_next_run(self) -> int:
-        """Calculate seconds until next scheduled run."""
+        """
+        Calculate seconds until next scheduled run.
+
+        Considers all configured run times and finds the soonest one
+        that hasn't been completed today.
+        """
         now = datetime.now(pytz.UTC)
+        today = now.date()
 
-        # Next run is today if we haven't run yet and it's before scheduled time
-        next_run = now.replace(
-            hour=self.run_hour,
-            minute=self.run_minute,
-            second=0,
-            microsecond=0
-        )
+        candidates = []
 
-        # If we're past today's run time or already ran today, schedule for tomorrow
-        if now >= next_run or self.last_run_date == now.date():
-            next_run += timedelta(days=1)
+        for run_config in self.run_times:
+            run_name = run_config.get('name', 'default')
+
+            # Create scheduled time for today
+            scheduled_time = now.replace(
+                hour=run_config['hour_utc'],
+                minute=run_config['minute_utc'],
+                second=0,
+                microsecond=0
+            )
+
+            # If this run is already completed today or past, schedule for tomorrow
+            if run_name in self.completed_runs_today or now >= scheduled_time:
+                scheduled_time += timedelta(days=1)
+
+            candidates.append(scheduled_time)
+
+        # Find the soonest scheduled time
+        if candidates:
+            next_run = min(candidates)
+        else:
+            # Fallback: tomorrow at 6:00 UTC
+            next_run = now.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
         delta = next_run - now
         return max(int(delta.total_seconds()), 60)  # Minimum 60 seconds
@@ -1942,12 +2120,17 @@ class ContinuousScheduler:
 
         return False
 
-    def _run_daily_with_retries(self) -> bool:
+    def _run_daily_with_retries(self, run_config: Optional[Dict] = None) -> bool:
         """
         Run the daily job with retries on initialization failure.
 
         First waits for IB Gateway API to be truly ready (not just accepting
         connections), then attempts initialization with retries.
+
+        Args:
+            run_config: Optional config for this specific run, containing:
+                - name: Run name (e.g., "EU_open", "US_open")
+                - exchanges: List of target exchanges for this run
 
         Returns:
             True if successful, False otherwise
@@ -1955,9 +2138,8 @@ class ContinuousScheduler:
         # First, wait for gateway API to be ready before any init attempts
         # This prevents wasting retries on a gateway that's still restarting
         if not self._wait_for_gateway_api_ready():
-            print("Gateway API not ready after timeout, skipping today's run")
+            print("Gateway API not ready after timeout, skipping this run")
             get_health_server().update_ib_status(False)
-            self.last_run_date = date.today()  # Mark as attempted to prevent retry loop
             return False
 
         for attempt in range(1, self.MAX_INIT_RETRIES + 1):
@@ -1970,9 +2152,12 @@ class ContinuousScheduler:
                 if self.scheduler.initialize():
                     # Update health server with IB connected status
                     get_health_server().update_ib_status(True)
-                    result = self.scheduler.run_daily()
-                    print(f"Daily run completed: {json.dumps(result, indent=2)}")
-                    self.last_run_date = date.today()
+
+                    # Pass run config to run_daily for exchange filtering
+                    result = self.scheduler.run_daily(run_config=run_config)
+
+                    run_name = run_config.get('name', 'daily') if run_config else 'daily'
+                    print(f"Run '{run_name}' completed: {json.dumps(result, indent=2)}")
                     return True
                 else:
                     get_health_server().update_ib_status(False)
@@ -1994,9 +2179,12 @@ class ContinuousScheduler:
         return False
 
     def run(self):
-        """Main loop - runs continuously, executing daily job at scheduled time."""
+        """Main loop - runs continuously, executing jobs at scheduled times."""
         print(f"ContinuousScheduler started")
-        print(f"Scheduled run time: {self.run_hour:02d}:{self.run_minute:02d} UTC")
+        print(f"Configured run times:")
+        for rt in self.run_times:
+            print(f"  - {rt['name']}: {rt['hour_utc']:02d}:{rt['minute_utc']:02d} UTC "
+                  f"(exchanges: {rt.get('exchanges', 'all')})")
         print(f"Current time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
         # Start health check server for external monitoring
@@ -2016,22 +2204,29 @@ class ContinuousScheduler:
 
         while self.running:
             try:
-                if self._should_run_now():
+                should_run, run_config = self._should_run_now()
+                if should_run and run_config:
+                    run_name = run_config.get('name', 'default')
                     print(f"\n{'='*60}")
-                    print(f"Starting daily run at {datetime.now(pytz.UTC).isoformat()}")
+                    print(f"Starting run '{run_name}' at {datetime.now(pytz.UTC).isoformat()}")
+                    print(f"Target exchanges: {run_config.get('exchanges', 'all')}")
                     print(f"{'='*60}\n")
 
-                    success = self._run_daily_with_retries()
+                    success = self._run_daily_with_retries(run_config)
+
+                    # Mark this run as completed
+                    self.completed_runs_today.add(run_name)
 
                     # Update health server with run result
                     health_server.update_daily_run({
                         "timestamp": datetime.now(pytz.UTC).isoformat(),
                         "success": success,
-                        "date": date.today().isoformat()
+                        "date": date.today().isoformat(),
+                        "run_name": run_name
                     })
 
                     print(f"\n{'='*60}")
-                    print(f"Daily run finished at {datetime.now(pytz.UTC).isoformat()}")
+                    print(f"Run '{run_name}' finished at {datetime.now(pytz.UTC).isoformat()}")
                     print(f"{'='*60}\n")
 
                 # Calculate sleep time

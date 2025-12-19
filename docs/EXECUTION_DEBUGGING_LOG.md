@@ -2,6 +2,30 @@
 
 This document captures lessons learned while debugging the trading engine execution pipeline.
 
+## Multi-Exchange Scheduling (Dec 19, 2025)
+
+The scheduler now supports multiple run times per day to handle instruments trading on different exchanges:
+
+| Run Name | Time (UTC) | Target Exchanges |
+|----------|------------|------------------|
+| EU_open | 09:00 | LSE, LSEETF, XETRA, IBIS |
+| US_open | 14:45 | NYSE, NASDAQ, SMART, CME, GLOBEX |
+
+**How it works:**
+1. At 9:00 UTC (EU_open), orders for LSE/XETRA instruments execute immediately
+2. Orders for US instruments are **deferred** (stored in `_deferred_orders`)
+3. At 14:45 UTC (US_open), deferred US orders are included and executed
+4. Any still-deferred orders carry over to the next day's appropriate run
+
+**Key files:**
+- `config/settings.yaml:178-188` - Run time configuration
+- `src/scheduler.py:1414-1539` - Order filtering by exchange
+- `src/scheduler.py:1907-1941` - Multi-run time checking
+
+**Problem solved:** Previously, US orders submitted at 9:00 UTC would fail with "market not open" errors (e.g., ARCC Error 10089). Now they wait for the 14:45 UTC run when US markets are open.
+
+---
+
 ## Current Portfolio Status (Dec 18, 2025)
 
 | Symbol | Qty | Avg Cost | Market Price | Currency | Sleeve |

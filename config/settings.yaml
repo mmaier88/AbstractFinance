@@ -169,13 +169,26 @@ crisis:
 # Paper Trading Burn-In
 burn_in_days: 60
 
-# Schedule - Run during EU market hours for best liquidity
-# EU markets: 8:00-16:30 UTC (9:00-17:30 CET)
-# 9:00 UTC = 10:00 CET - good liquidity, markets settled after open
+# Schedule - Multi-exchange run times
+# Each exchange region gets its own run time for optimal liquidity
+# Orders are deferred to the next appropriate run if a market is closed
 schedule:
+  timezone: "Europe/Berlin"
+  # Multiple run times per day - each targets different exchange hours
+  run_times:
+    - name: "EU_open"
+      hour_utc: 9
+      minute_utc: 0
+      # Exchanges that should execute during this window
+      exchanges: ["LSE", "LSEETF", "XETRA", "IBIS"]
+    - name: "US_open"
+      hour_utc: 14
+      minute_utc: 45
+      # US markets open at 14:30 UTC, run 15 min after for stability
+      exchanges: ["NYSE", "NASDAQ", "SMART", "CME", "GLOBEX"]
+  # Legacy single-time fallback (used if run_times not defined)
   run_hour_utc: 9
   run_minute_utc: 0
-  timezone: "Europe/Berlin"
 
 # IBKR Connection
 ibkr:
