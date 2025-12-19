@@ -455,12 +455,21 @@ class DataFeed:
 
     def _get_instrument_spec(self, instrument_id: str) -> Optional[InstrumentSpec]:
         """
-        Get instrument spec, handling futures with expiry dates.
-        E.g., M6E_20251215 will match the M6E config entry.
+        Get instrument spec, handling various ID formats.
+
+        Searches in order:
+        1. Direct config ID match (e.g., "value_ewu")
+        2. Symbol match (e.g., "IUKD" -> finds spec with symbol="IUKD")
+        3. Futures with expiry suffix (e.g., "M6E_20251215" -> "M6E")
         """
         # Direct match first
         if instrument_id in self._instruments:
             return self._instruments[instrument_id]
+
+        # Search by symbol match (important for price conversion lookups)
+        for inst_id, spec in self._instruments.items():
+            if spec.symbol == instrument_id:
+                return spec
 
         # For futures with expiry dates (e.g., M6E_20251215), try base symbol
         if '_' in instrument_id:
