@@ -906,3 +906,247 @@ for p in ib.positions():
 ib.disconnect()
 "'
 ```
+
+---
+
+## Execution Fixes (December 19, 2025)
+
+Fixes for order rejection issues discovered during the first successful execution run.
+
+### 22. Price Fetch Exception Crashing Daily Run
+
+**Date:** December 19, 2025
+
+**Symptom:** Daily run aborted with `"Could not get price for eurusd_micro_20260316"` before executing any orders.
+
+**Root Cause:** In `_execute_orders_new_stack()`, the call to `get_last_price()` at line 1431 was NOT wrapped in try/except. When price fetch failed for an FX future, the exception propagated and crashed the entire run.
+
+```python
+# BEFORE (BUG): No exception handling
+for order in orders:
+    price = self.data_feed.get_last_price(order.instrument_id)  # CRASH!
+```
+
+**Fix:** Wrapped in try/except with fallback to portfolio position prices:
+```python
+# AFTER (FIXED):
+for order in orders:
+    price = None
+    try:
+        price = self.data_feed.get_last_price(order.instrument_id)
+    except Exception as e:
+        self.logger.logger.debug(f"Price fetch failed for {order.instrument_id}: {e}")
+    if not price:
+        price = position_prices.get(order.instrument_id)  # Fallback
+```
+
+**File:** `src/scheduler.py:1429-1444`
+
+**Why Safety Checks Missed It:**
+- No unit test for exception handling in `_execute_orders_new_stack()`
+- The `get_last_price()` method raises `ValueError` instead of returning `None`
+- No integration test covering FX futures with missing market data
+
+---
+
+### 23. Variable Reference Bug (`dry_run` vs `self.dry_run`)
+
+**Date:** December 19, 2025
+
+**Symptom:** `NameError: name 'dry_run' is not defined` after successful order execution.
+
+**Root Cause:** Post-order reconciliation code referenced `dry_run` instead of `self.dry_run`:
+```python
+# BEFORE (BUG):
+if execution_results.get("filled", 0) > 0 and not dry_run:  # NameError!
+```
+
+**Fix:**
+```python
+# AFTER (FIXED):
+if execution_results.get("filled", 0) > 0 and not self.dry_run:
+```
+
+**File:** `src/scheduler.py:798`
+
+**Why Safety Checks Missed It:**
+- No unit test for post-order reconciliation path
+- Code path only triggered when `filled > 0` (rare until fixes)
+- Static analysis (pylint/mypy) would have caught this if enabled
+
+---
+
+### 24. ARCC Order Rejected - NASDAQ Direct Routing
+
+**Date:** December 19, 2025
+
+**Symptom:** `Error 10311: This order will be directly routed to NASDAQ. Direct routed orders may result in higher trade fees.`
+
+**Root Cause:** ARCC was configured with `exchange: "NASDAQ"` which triggers IBKR's precautionary setting that blocks direct routing.
+
+```yaml
+# BEFORE (REJECTED):
+bdc_arcc:
+  symbol: "ARCC"
+  exchange: "NASDAQ"  # Direct routing - blocked by IBKR settings
+```
+
+**Fix:** Use SMART routing with primary_exchange hint:
+```yaml
+# AFTER (FIXED):
+bdc_arcc:
+  symbol: "ARCC"
+  exchange: "SMART"           # Use SMART routing
+  primary_exchange: "NASDAQ"  # Hint for best execution
+```
+
+Also updated `build_contract()` to read `primary_exchange` from config:
+```python
+primary_exchange = spec.get('primary_exchange')
+if primary_exchange:
+    contract = Stock(symbol, 'SMART', currency, primaryExchange=primary_exchange)
+```
+
+**Files:**
+- `config/instruments.yaml:228-234`
+- `src/execution_ibkr.py:517-520`
+
+**Why Safety Checks Missed It:**
+- No test for IBKR precautionary settings
+- This is an IBKR account-level setting, not detectable from contract alone
+- Need pre-trade validation against IBKR's account restrictions
+
+---
+
+### 25. Option Placeholders Attempting to Trade as Indices
+
+**Date:** December 19, 2025
+
+**Symptom:** Multiple errors:
+- `Error 200: No security definition for FVS 202601` (wrong futures expiry)
+- `Error 10345: You cannot trade an Index` (SX5E, SX7E, VIX)
+
+**Root Cause:** The `option_hedges` section in instruments.yaml contains **pricing placeholders**, not tradeable contracts:
+- `vstoxx_call` - sec_type: FUT (but wrong expiry format for EUREX)
+- `sx5e_put` - sec_type: IND (indices are not tradeable)
+- `vix_call` - sec_type: IND
+- `eu_bank_put` - sec_type: IND
+
+These are meant for **pricing calculations only** - the tail hedge manager uses them to size hedges, but actual option contracts need proper strike/expiry selection at execution time.
+
+**Fix:** Added `tradeable: false` flag to skip during execution:
+```yaml
+option_hedges:
+  vstoxx_call:
+    symbol: "FVS"
+    sec_type: "FUT"
+    tradeable: false  # Placeholder only - skip during execution
+
+  sx5e_put:
+    symbol: "ESTX50"
+    sec_type: "IND"
+    tradeable: false  # Placeholder only - skip during execution
+```
+
+Added check in execution flow:
+```python
+spec = self._find_instrument_spec(order.instrument_id)
+if spec and spec.get('tradeable') is False:
+    self.logger.logger.info(f"Skipping non-tradeable placeholder: {order.instrument_id}")
+    summary["skipped_non_tradeable"] = summary.get("skipped_non_tradeable", 0) + 1
+    continue
+```
+
+**Files:**
+- `config/instruments.yaml:435-478`
+- `src/scheduler.py:1430-1437, 535-544`
+
+**Why Safety Checks Missed It:**
+- No validation that sec_type: IND is not tradeable
+- No test for option placeholder flow
+- Missing `validate_instruments_config()` check for tradeable consistency
+
+---
+
+## Systemic Issues Identified (December 19, 2025)
+
+### Pattern 1: Exception Handling Gaps
+
+**Problem:** Multiple places call external APIs without try/except, causing crashes.
+
+**Found instances:**
+
+| Location | Issue | Fixed? |
+|----------|-------|--------|
+| `scheduler.py:1431` | `get_last_price()` | ✅ Fixed |
+| `tail_hedge.py:789,834,877,960,1029` | `get_last_price()` | ⚠️ CHECK |
+| `strategy_logic.py:644,751,758,825,842,887,888,980,994` | `get_last_price()` | ⚠️ CHECK |
+
+**Recommendation:** Audit all `get_last_price()` calls and wrap in try/except or change to return `Optional[float]`.
+
+### Pattern 2: Self Reference Bugs
+
+**Problem:** Instance variables referenced without `self.` prefix.
+
+**Detection:** Run `pylint` or `mypy` with strict mode to catch these statically.
+
+**Recommendation:** Add mypy to CI pipeline.
+
+### Pattern 3: Non-Tradeable Instruments in Order Flow
+
+**Problem:** Instruments with sec_type: IND or placeholder flags reach execution.
+
+**Detection:** Should have been caught by:
+1. `validate_instruments_config()` - add check for `sec_type: IND` with no `tradeable: false`
+2. Pre-execution validation in `_execute_orders_new_stack()`
+
+**Recommendation:** Add to startup validation:
+```python
+def validate_instruments_config(config):
+    for category, instruments in config.items():
+        for inst_id, spec in instruments.items():
+            if spec.get('sec_type') == 'IND' and spec.get('tradeable') is not False:
+                warnings.append(f"{inst_id}: sec_type=IND but tradeable not False")
+```
+
+### Pattern 4: Missing Integration Tests
+
+**Problem:** Many code paths only tested in production.
+
+**Missing test coverage:**
+- Exception handling in execution flow
+- Post-order reconciliation
+- Option placeholder handling
+- IBKR precautionary settings
+
+**Recommendation:** Add integration tests for these paths.
+
+---
+
+## Safety Check Gaps Analysis
+
+| Issue | What Would Have Caught It |
+|-------|---------------------------|
+| #22 Price exception | Unit test for `_execute_orders_new_stack()` with missing prices |
+| #23 dry_run reference | pylint/mypy static analysis |
+| #24 NASDAQ routing | Pre-trade IBKR account validation |
+| #25 Option placeholders | `validate_instruments_config()` enhancement |
+
+### Recommended CI Additions
+
+1. **Static Analysis:**
+   ```yaml
+   - run: pip install mypy pylint
+   - run: mypy src/ --strict
+   - run: pylint src/ --errors-only
+   ```
+
+2. **Config Validation:**
+   ```yaml
+   - run: python -c "from src.utils.invariants import validate_instruments_config; ..."
+   ```
+
+3. **Integration Tests:**
+   ```yaml
+   - run: pytest tests/test_integration_flow.py -v
+   ```

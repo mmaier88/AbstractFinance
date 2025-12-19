@@ -232,6 +232,22 @@ def validate_instruments_config(
                 all_symbols.add(symbol)
                 symbol_locations[symbol].append(f"{sleeve}/{inst_id}")
 
+    # Check for non-tradeable instruments missing tradeable: false flag
+    # sec_type=IND (indices) cannot be traded directly
+    for sleeve, instruments in instruments_config.items():
+        if not isinstance(instruments, dict):
+            continue
+        for inst_id, spec in instruments.items():
+            if isinstance(spec, dict):
+                sec_type = spec.get("sec_type", "STK")
+                tradeable = spec.get("tradeable", True)
+                # Indices cannot be traded
+                if sec_type == "IND" and tradeable is not False:
+                    warnings.append(
+                        f"{inst_id}: sec_type=IND but tradeable not False. "
+                        f"Indices cannot be traded directly - add 'tradeable: false'"
+                    )
+
     # Check for ambiguity: symbol matching config ID of different instrument
     # This is CRITICAL because it causes ID mapping confusion
     for symbol in all_symbols:
