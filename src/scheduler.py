@@ -1428,7 +1428,11 @@ class DailyScheduler:
 
         for order in orders:
             # Get current price for netting calculations
-            price = self.data_feed.get_last_price(order.instrument_id)
+            price = None
+            try:
+                price = self.data_feed.get_last_price(order.instrument_id)
+            except Exception as e:
+                self.logger.logger.debug(f"Price fetch failed for {order.instrument_id}: {e}")
             if not price:
                 # Fallback 1: Try portfolio position price directly
                 price = position_prices.get(order.instrument_id)
