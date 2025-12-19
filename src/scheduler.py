@@ -27,6 +27,7 @@ from .healthcheck import start_health_server, get_health_server
 from .futures_rollover import check_and_roll_futures
 from .fx_rates import FXRates, get_fx_rates
 from .legacy_unwind import LegacyUnwindGlidepath, create_glidepath
+from .utils.instruments import PriceConverter, find_instrument_spec
 from .utils.invariants import (
     assert_position_id_valid,
     assert_no_conflicting_orders,
@@ -329,6 +330,9 @@ class DailyScheduler:
                 instruments_config=self.instruments,
                 settings=self.settings
             )
+
+            # Initialize price converter for GBX (pence/GBP) handling
+            self._price_converter = PriceConverter(self.instruments)
 
             # Initialize risk engine
             self.risk_engine = RiskEngine(self.settings)
@@ -1423,11 +1427,16 @@ class DailyScheduler:
 
         # Build fallback prices from portfolio positions (IBKR already provides market prices)
         # Portfolio positions use IBKR symbols (e.g., "CSPX") while orders may use config IDs (e.g., "us_index_etf")
+        # IMPORTANT: Apply price conversion for GBX symbols (pence -> GBP) to ensure internal consistency
         position_prices = {}
         if hasattr(self, 'portfolio') and self.portfolio:
             for pos in self.portfolio.positions.values():
                 if pos.market_price and pos.market_price > 0:
-                    position_prices[pos.instrument_id] = pos.market_price
+                    # Convert GBX prices (pence) to GBP for internal consistency
+                    price = pos.market_price
+                    if hasattr(self, '_price_converter') and self._price_converter:
+                        price = self._price_converter.from_broker(pos.instrument_id, price)
+                    position_prices[pos.instrument_id] = price
 
         # Build reverse mapping: config instrument_id -> IBKR symbol
         config_to_symbol = {}

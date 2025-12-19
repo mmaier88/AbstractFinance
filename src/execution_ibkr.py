@@ -1254,16 +1254,18 @@ class IBKRTransport:
             except Exception as e:
                 self.logger.logger.debug(f"Portfolio price fallback failed for {instrument_id}: {e}")
 
-        # Handle GBP pence conversion
-        if contract.currency == 'GBP':
-            if last and last > 100:
-                last = last / 100.0
-            if bid and bid > 100:
-                bid = bid / 100.0
-            if ask and ask > 100:
-                ask = ask / 100.0
-            if close and close > 100:
-                close = close / 100.0
+        # Handle GBP pence conversion using centralized PriceConverter
+        # This replaces the old heuristic (price > 100) with proper symbol-based detection
+        symbol = contract.symbol
+        if self._price_converter and self._price_converter.is_gbx_quoted(symbol):
+            if last:
+                last = self._price_converter.from_broker(symbol, last)
+            if bid:
+                bid = self._price_converter.from_broker(symbol, bid)
+            if ask:
+                ask = self._price_converter.from_broker(symbol, ask)
+            if close:
+                close = self._price_converter.from_broker(symbol, close)
 
         # If we still have no price data, return None
         if last is None and close is None:
