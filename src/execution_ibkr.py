@@ -514,7 +514,11 @@ class IBClient:
                 'SBF': 'SBF',
                 'IBIS': 'IBIS',
             }
-            if exchange in primary_exchange_map:
+            # Check for explicit primary_exchange in config first
+            primary_exchange = spec.get('primary_exchange')
+            if primary_exchange:
+                contract = Stock(symbol, 'SMART', currency, primaryExchange=primary_exchange)
+            elif exchange in primary_exchange_map:
                 primary = primary_exchange_map[exchange]
                 contract = Stock(symbol, 'SMART', currency, primaryExchange=primary)
             else:

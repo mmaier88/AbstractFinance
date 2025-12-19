@@ -532,6 +532,17 @@ class DailyScheduler:
             )
             return False
 
+    def _find_instrument_spec(self, instrument_id: str) -> Optional[Dict]:
+        """Find instrument specification in config."""
+        for category, instruments in self.instruments.items():
+            if isinstance(instruments, dict):
+                if instrument_id in instruments:
+                    return instruments[instrument_id]
+                for inst_key, spec in instruments.items():
+                    if isinstance(spec, dict) and spec.get('symbol') == instrument_id:
+                        return spec
+        return None
+
     def run_daily(self) -> Dict[str, Any]:
         """
         Execute the daily trading routine.
@@ -1427,6 +1438,15 @@ class DailyScheduler:
                         config_to_symbol[inst_id] = spec["symbol"]
 
         for order in orders:
+            # Check if instrument is tradeable (skip placeholders like option hedges)
+            spec = self._find_instrument_spec(order.instrument_id)
+            if spec and spec.get('tradeable') is False:
+                self.logger.logger.info(
+                    f"Skipping non-tradeable placeholder: {order.instrument_id}"
+                )
+                summary["skipped_non_tradeable"] = summary.get("skipped_non_tradeable", 0) + 1
+                continue
+
             # Get current price for netting calculations
             price = None
             try:

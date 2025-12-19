@@ -227,7 +227,8 @@ credit_us:
   # BDCs - These are individual stocks (no KID required)
   bdc_arcc:
     symbol: "ARCC"
-    exchange: "NASDAQ"
+    exchange: "SMART"           # Use SMART routing to avoid IBKR precautionary rejection
+    primary_exchange: "NASDAQ"
     sec_type: "STK"
     currency: "USD"
     description: "Ares Capital Corporation"
@@ -429,7 +430,8 @@ volatility:
 
 # Option hedge placeholders - used by TailHedgeManager for abstract option orders
 # These are resolved to underlying prices for sizing calculations
-# Actual option contracts are created at execution time with specific strikes/expiries
+# NOTE: These are NOT tradeable directly - option trading requires proper contract specs
+# TODO: Implement proper option contract factory to convert placeholders to real options
 option_hedges:
   vstoxx_call:
     symbol: "FVS"               # VSTOXX Mini Futures (underlying for pricing)
@@ -439,6 +441,7 @@ option_hedges:
     multiplier: 100.0
     underlying_index: "V2X"
     option_type: "CALL"
+    tradeable: false            # Placeholder only - skip during execution
     description: "VSTOXX Call Option placeholder - prices via FVS futures"
 
   sx5e_put:
@@ -449,6 +452,7 @@ option_hedges:
     multiplier: 10.0
     underlying_index: "SX5E"
     option_type: "PUT"
+    tradeable: false            # Placeholder only - skip during execution
     description: "SX5E Put Option placeholder - prices via Euro STOXX 50 index"
 
   vix_call:
@@ -459,6 +463,7 @@ option_hedges:
     multiplier: 100.0
     underlying_index: "VIX"
     option_type: "CALL"
+    tradeable: false            # Placeholder only - skip during execution
     description: "VIX Call Option placeholder - prices via VIX index"
 
   eu_bank_put:
@@ -469,6 +474,7 @@ option_hedges:
     multiplier: 10.0
     underlying_index: "SX7E"
     option_type: "PUT"
+    tradeable: false            # Placeholder only - skip during execution
     description: "EU Banks Put Option placeholder - prices via SX7E index"
 
 europe_vol_structures:
