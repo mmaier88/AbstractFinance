@@ -1219,6 +1219,53 @@ def validate_instruments_config(config):
 
 **Recommendation:** Add integration tests for these paths.
 
+### Pattern 5: Instrument ID Suffix Mismatch (NEW - Issue #26)
+
+**Problem:** IBKR returns positions with contract-specific suffixes (e.g., `eurusd_micro_20260316`) that don't match our config IDs (`eurusd_micro`).
+
+**Scope:** Affects ALL futures instruments. Any futures position synced from IBKR will have expiry suffix.
+
+**Root Cause:** Position sync adds expiry suffix, but lookup functions expected exact match.
+
+**Detection:**
+- Config validation should check that all position IDs can be resolved
+- Add test for futures ID resolution with various suffix formats
+
+**Recommendation:**
+1. Standardize ID normalization in a single utility function
+2. Add `normalize_instrument_id(id: str) -> str` that strips known suffixes
+3. Use this in all lookups (execution, data feed, portfolio)
+
+### Pattern 6: Asymmetric Currency Unit Conversion (NEW - Issue #27)
+
+**Problem:** Data flows through conversion in one direction but not the reverse. GBP ETFs:
+- **Inbound:** IBKR returns pence → DataFeed divides by 100 → internal uses GBP ✓
+- **Outbound:** Internal GBP → Execution sends GBP → IBKR expects pence ✗
+
+**Scope:** Affects ALL GBP-denominated ETFs in `GBX_QUOTED_ETFS` / `GBX_QUOTED_SYMBOLS`.
+
+**Root Cause:** Conversion logic was only added to data ingestion, not order submission.
+
+**Detection:**
+- Integration test that round-trips a price through fetch → order → verify
+- Unit test for order price vs. expected IBKR format
+
+**Recommendation:**
+1. Document ALL unit conversions in a central place
+2. Ensure symmetric handling: if data comes in with conversion, orders must convert back
+3. Consider a `PriceConverter` class that handles both directions
+4. Add assertion: `order_price * expected_multiplier ≈ market_bid/ask`
+
+### Pattern 7: Config Data Entry Errors (Issue #28 - Idiosyncratic)
+
+**Problem:** Wrong symbol used for exchange (CS51 is LSE, not XETRA).
+
+**Scope:** One-off data entry error, not systemic.
+
+**Prevention:**
+- Add config validation that queries IBKR to verify symbol/exchange combinations
+- Could be expensive, so run as pre-deploy check rather than startup
+
 ---
 
 ## Safety Check Gaps Analysis
@@ -1229,6 +1276,10 @@ def validate_instruments_config(config):
 | #23 dry_run reference | pylint/mypy static analysis |
 | #24 NASDAQ routing | Pre-trade IBKR account validation |
 | #25 Option placeholders | `validate_instruments_config()` enhancement |
+| #26 Futures suffix | Integration test for futures position → order flow |
+| #27 GBX price units | Round-trip price test (fetch → order → verify) |
+| #28 Wrong symbol | IBKR contract validation at config load |
+| #29 Missing placeholder | Strategy→Config reference validation |
 
 ### Recommended CI Additions
 
