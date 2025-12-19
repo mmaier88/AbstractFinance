@@ -32,6 +32,14 @@ from .portfolio import Position, Sleeve, PortfolioState, InstrumentType
 from .logging_utils import TradingLogger, get_trading_logger
 from .alerts import AlertManager, Alert, AlertType, AlertSeverity
 
+# Centralized instrument utilities
+from .utils.instruments import (
+    normalize_instrument_id,
+    extract_expiry_for_ibkr,
+    find_instrument_spec,
+    PriceConverter,
+)
+
 # Import new execution types
 try:
     from .execution.types import MarketDataSnapshot
@@ -47,16 +55,6 @@ US_MARKET_OPEN = dt_time(9, 30)  # 9:30 AM ET
 US_MARKET_CLOSE = dt_time(16, 0)  # 4:00 PM ET
 EU_MARKET_OPEN = dt_time(9, 0)  # 9:00 AM CET
 EU_MARKET_CLOSE = dt_time(17, 30)  # 5:30 PM CET
-
-# GBP-denominated LSE ETFs quoted in pence (GBX) by IBKR
-# Prices must be converted: GBP -> pence (multiply by 100) for orders
-# This list must match GBX_QUOTED_ETFS in data_feeds.py
-GBX_QUOTED_SYMBOLS = {
-    "SMEA",   # iShares Core MSCI Europe UCITS ETF - GBP
-    "IUKD",   # iShares UK Dividend UCITS ETF - GBP
-    "IEAC",   # iShares Core Corp Bond UCITS ETF - GBP
-    "IHYG",   # iShares Euro High Yield Corp Bond UCITS ETF - GBP
-}
 
 # Metrics integration
 try:
@@ -156,6 +154,9 @@ class IBClient:
         self._pending_orders: Dict[str, Trade] = {}
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
+
+        # Price converter for GBX (pence/GBP) handling
+        self._price_converter = PriceConverter()
 
         # Wire up disconnect event handler (use lambda to ensure proper binding)
         self.ib.disconnectedEvent += lambda: self._on_disconnect()
@@ -504,14 +505,14 @@ class IBClient:
         if instrument_id in self._instruments_cache:
             return self._instruments_cache[instrument_id]
 
-        # Find instrument spec in config
-        spec = self._find_instrument_spec(instrument_id, instruments_config)
+        # Find instrument spec in config (handles expiry suffixes automatically)
+        spec = find_instrument_spec(instrument_id, instruments_config)
         if not spec:
             return None
 
         contract = None
         sec_type = spec.get('sec_type', 'STK')
-        symbol = spec.get('symbol', instrument_id)
+        symbol = spec.get('symbol', normalize_instrument_id(instrument_id))
         exchange = spec.get('exchange', 'SMART')
         currency = spec.get('currency', 'USD')
 
@@ -535,14 +536,9 @@ class IBClient:
                 contract = Stock(symbol, exchange, currency)
 
         elif sec_type == 'FUT':
-            import re
-            # Check if instrument_id contains an expiry suffix (YYYYMMDD format)
-            expiry_match = re.search(r'_(\d{8})$', instrument_id)
-            if expiry_match:
-                # Use expiry from instrument_id (convert YYYYMMDD to YYYYMM for IBKR)
-                full_expiry = expiry_match.group(1)
-                expiry = full_expiry[:6]  # YYYYMM
-            else:
+            # Use expiry from instrument_id if present, otherwise calculate front month
+            expiry = extract_expiry_for_ibkr(instrument_id)
+            if not expiry:
                 # Calculate front month expiry (YYYYMM format)
                 from datetime import date
                 today = date.today()
@@ -589,33 +585,10 @@ class IBClient:
     ) -> Optional[Dict]:
         """Find instrument specification in config.
 
-        Handles instrument IDs with expiry suffixes (e.g., eurusd_micro_20260316)
-        by stripping the suffix to find the base instrument.
+        Delegates to centralized find_instrument_spec() utility.
+        Handles instrument IDs with expiry suffixes (e.g., eurusd_micro_20260316).
         """
-        # First try exact match
-        for category, instruments in instruments_config.items():
-            if isinstance(instruments, dict):
-                if instrument_id in instruments:
-                    return instruments[instrument_id]
-                for inst_key, spec in instruments.items():
-                    if isinstance(spec, dict) and spec.get('symbol') == instrument_id:
-                        return spec
-
-        # For futures with expiry suffix (e.g., eurusd_micro_20260316), try base ID
-        # Pattern: base_id_YYYYMMDD where YYYYMMDD is 8 digits
-        import re
-        match = re.match(r'^(.+)_(\d{8})$', instrument_id)
-        if match:
-            base_id = match.group(1)
-            for category, instruments in instruments_config.items():
-                if isinstance(instruments, dict):
-                    if base_id in instruments:
-                        return instruments[base_id]
-                    for inst_key, spec in instruments.items():
-                        if isinstance(spec, dict) and spec.get('symbol') == base_id:
-                            return spec
-
-        return None
+        return find_instrument_spec(instrument_id, instruments_config)
 
     def place_order(
         self,
@@ -663,16 +636,8 @@ class IBClient:
         quantity = order_spec.quantity
 
         # Convert prices for GBX-quoted instruments (GBP -> pence)
-        limit_price = order_spec.limit_price
-        stop_price = order_spec.stop_price
-        if contract.symbol in GBX_QUOTED_SYMBOLS:
-            if limit_price is not None:
-                limit_price = round(limit_price * 100, 2)  # GBP to pence
-                self.logger.logger.debug(
-                    f"Converted {contract.symbol} limit price: {order_spec.limit_price} GBP -> {limit_price} pence"
-                )
-            if stop_price is not None:
-                stop_price = round(stop_price * 100, 2)
+        limit_price = self._price_converter.to_broker(contract.symbol, order_spec.limit_price)
+        stop_price = self._price_converter.to_broker(contract.symbol, order_spec.stop_price)
 
         if order_spec.order_type == "MKT":
             order = MarketOrder(action, quantity)
@@ -999,6 +964,9 @@ class IBKRTransport:
         # Internal order ID counter
         self._next_order_id = 1
 
+        # Price converter for GBX (pence/GBP) handling
+        self._price_converter = PriceConverter(instruments_config)
+
     @property
     def ib(self) -> Optional[Any]:
         """Get underlying IB instance."""
@@ -1044,12 +1012,7 @@ class IBKRTransport:
             raise ValueError(f"Could not build contract for {instrument_id}")
 
         # Convert prices for GBX-quoted instruments (GBP -> pence)
-        adjusted_limit_price = limit_price
-        if contract.symbol in GBX_QUOTED_SYMBOLS and limit_price is not None:
-            adjusted_limit_price = round(limit_price * 100, 2)  # GBP to pence
-            self.logger.logger.debug(
-                f"Converted {contract.symbol} limit price: {limit_price} GBP -> {adjusted_limit_price} pence"
-            )
+        adjusted_limit_price = self._price_converter.to_broker(contract.symbol, limit_price)
 
         # Build order
         if order_type.upper() == "MKT":
@@ -1154,12 +1117,7 @@ class IBKRTransport:
             del self._active_trades[broker_order_id]
 
             # Convert price for GBX-quoted instruments (GBP -> pence)
-            adjusted_limit_price = new_limit_price
-            if contract.symbol in GBX_QUOTED_SYMBOLS:
-                adjusted_limit_price = round(new_limit_price * 100, 2)
-                self.logger.logger.debug(
-                    f"Converted {contract.symbol} limit price: {new_limit_price} GBP -> {adjusted_limit_price} pence"
-                )
+            adjusted_limit_price = self._price_converter.to_broker(contract.symbol, new_limit_price)
 
             # Create new order with new ID
             new_order = LimitOrder(

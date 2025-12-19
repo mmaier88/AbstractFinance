@@ -29,6 +29,13 @@ try:
 except ImportError:
     INVARIANTS_AVAILABLE = False
 
+# Import centralized price converter
+try:
+    from .utils.instruments import PriceConverter
+    PRICE_CONVERTER_AVAILABLE = True
+except ImportError:
+    PRICE_CONVERTER_AVAILABLE = False
+
 
 @dataclass
 class DataQualityMetrics:
@@ -322,6 +329,12 @@ class DataFeed:
         self._ibkr_metrics = DataQualityMetrics(source="IBKR")
         self._yahoo_metrics = DataQualityMetrics(source="Yahoo")
 
+        # Price converter for GBX (pence/GBP) handling
+        if PRICE_CONVERTER_AVAILABLE:
+            self._price_converter = PriceConverter(self.instruments_config)
+        else:
+            self._price_converter = None
+
         # Build instrument lookup
         self._instruments: Dict[str, InstrumentSpec] = {}
         self._build_instrument_lookup()
@@ -519,10 +532,9 @@ class DataFeed:
                         price = ticker.close
                     self.ib.cancelMktData(contract)
 
-                    # GBX conversion
-                    if price and spec and spec.symbol in self.GBX_QUOTED_ETFS:
-                        price = price / 100.0
-                        logger.debug(f"Batch: converted {spec.symbol} from GBX to GBP")
+                    # GBX conversion (pence -> GBP)
+                    if price and spec and self._price_converter:
+                        price = self._price_converter.from_broker(spec.symbol, price)
 
                     if price is not None:
                         self._price_cache[inst_id] = (price, datetime.now())
@@ -542,8 +554,9 @@ class DataFeed:
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
                     spec = self._get_instrument_spec(inst_id)
-                    if spec and spec.symbol in self.GBX_QUOTED_ETFS:
-                        price = price / 100.0
+                    # GBX conversion (pence -> GBP)
+                    if spec and self._price_converter:
+                        price = self._price_converter.from_broker(spec.symbol, price)
                     self._price_cache[inst_id] = (price, datetime.now())
                     results[inst_id] = price
             except Exception as e:
@@ -597,10 +610,9 @@ class DataFeed:
                         price = ticker.close
                     self.ib.cancelMktData(contract)
 
-                    # Convert GBX (pence) to GBP for known GBX-quoted LSE ETFs
-                    if price and spec and spec.symbol in self.GBX_QUOTED_ETFS:
-                        price = price / 100.0
-                        logger.debug(f"Converted {spec.symbol} from GBX to GBP: {price * 100:.2f}p -> {price:.2f} GBP")
+                    # Convert GBX (pence) to GBP using centralized converter
+                    if price and spec and self._price_converter:
+                        price = self._price_converter.from_broker(spec.symbol, price)
 
                     latency_ms = (time.time() - start_time) * 1000
                     if price:
@@ -623,11 +635,9 @@ class DataFeed:
                 hist = data.history(period="1d")
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
-                    # Convert GBX (pence) to GBP for known GBX-quoted LSE ETFs
-                    # Yahoo Finance returns these in pence
-                    if spec and spec.symbol in self.GBX_QUOTED_ETFS:
-                        price = price / 100.0
-                        logger.debug(f"Converted {spec.symbol} from GBX to GBP (Yahoo): {price * 100:.2f}p -> {price:.2f} GBP")
+                    # Convert GBX (pence) to GBP using centralized converter
+                    if spec and self._price_converter:
+                        price = self._price_converter.from_broker(spec.symbol, price)
                     latency_ms = (time.time() - start_time) * 1000
                     self._yahoo_circuit.record_success()
                     self._yahoo_metrics.record_success(latency_ms)
