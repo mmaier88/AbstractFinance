@@ -14,18 +14,44 @@ The **European Decline Macro Fund** expresses the thesis that US companies and b
 - European regulatory burden and fiscal rigidity
 - Higher energy costs in Europe
 
-### Multi-Sleeve Architecture
+---
 
-The strategy is implemented across six sleeves:
+## Implementation Status (Honest Assessment)
 
-| Sleeve | Target Weight | Description |
-|--------|--------------|-------------|
-| **Core Index RV** | 35% | Long US (ES/SPY) vs Short EU (FESX/FEZ), FX-hedged |
-| **Sector RV** | 25% | Long US innovation sectors vs Short EU old-economy |
-| **Single Name** | 15% | US quality growth vs EU "zombies" |
-| **Credit & Carry** | 15% | Long US credit, underweight EU credit |
-| **Crisis Alpha** | 5% | Options, volatility, sovereign stress hedges |
-| **Cash Buffer** | 5% | Margin reserve |
+> **Last Audit:** January 5, 2026 | **Burn-in Day:** 17 / 60
+
+**The strategy is running at approximately 40% of documented capability.**
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| **Core Index RV** | WORKING | CSPX long, CS51 short active |
+| **Sector RV** | FALLBACK | Using legacy ETFs, not factor-neutral pairs |
+| **Europe Vol Convex** | NOT TRADING | Options marked `tradeable: false` |
+| **Credit Carry** | WORKING | LQDE, IHYU, FLOT, ARCC positions exist |
+| **Risk Parity** | WORKING | Scaling factor 1.7x observed |
+| **Sovereign Overlay** | STANDBY | Enabled, 0 orders (stress below threshold) |
+
+**What the burn-in validates:** Order execution reliability, position sizing, risk scaling, gateway auto-recovery.
+
+**What it does NOT validate:** Full strategy capability, options insurance payoff, factor-neutral sector pairs.
+
+**See:** `docs/ROADMAP.md` Phase R for implementation plan.
+
+---
+
+### Multi-Sleeve Architecture (v2.3)
+
+The strategy is implemented across five sleeves (v2.2 Portfolio Simplification):
+
+| Sleeve | Target Weight | Description | Status |
+|--------|--------------|-------------|--------|
+| **Core Index RV** | 20% | Long US (CSPX) vs Short EU (CS51), FX-hedged | WORKING |
+| **Sector RV** | 20% | Factor-neutral sector pairs (US vs EU) | FALLBACK |
+| **Europe Vol Convex** | 18% | VSTOXX calls, SX5E puts (PRIMARY insurance) | NOT IMPLEMENTED |
+| **Credit & Carry** | 8% | Long US credit (NORMAL regime only) | WORKING |
+| **Money Market** | 34% | Short-term funds (not idle cash) | WORKING |
+
+**Removed in v2.2:** Single Name (-0.334 Sharpe), Crisis Alpha (merged into Europe Vol)
 
 ### Expected Performance
 
@@ -37,19 +63,22 @@ Based on historical calibration:
 
 ## Paper Trading Status
 
-> **LIVE since December 3, 2025** - 60-day burn-in period in progress
+> **LIVE since December 18, 2025** - 60-day burn-in period in progress
 
-| Metric | Current | Target |
+| Metric | Current (Jan 5, 2026) | Target |
 |--------|---------|--------|
-| **Days Elapsed** | 5 / 60 | 60 trading days |
-| **NAV** | $10,843,730 | N/A |
-| **Total Return** | +8.4% | Positive |
-| **Max Drawdown** | -4.21% | < 10% |
-| **Target End Date** | Feb 1, 2026 | - |
+| **Days Elapsed** | 17 / 60 (28%) | 60 trading days |
+| **NAV** | $278,108 | N/A |
+| **Initial Capital** | $238,097 | N/A |
+| **Total Return** | +16.8% | Positive |
+| **Max Drawdown** | -0.72% | < 10% |
+| **Target End Date** | ~Feb 16, 2026 | - |
 
-**Active Sleeve**: core_index_rv only (Phase 1)
+**Active Sleeves**: Core Index RV, Credit Carry, legacy Sector RV (fallback)
 
-For detailed tracking, see [`docs/PAPER_TRADING.md`](docs/PAPER_TRADING.md).
+**NOTE**: Europe Vol Convex (18%) is NOT ACTIVE - options are placeholder only.
+
+For detailed strategy docs, see [`docs/INVESTMENT_STRATEGY.md`](docs/INVESTMENT_STRATEGY.md).
 
 ```bash
 # Quick status check

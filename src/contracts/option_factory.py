@@ -103,7 +103,11 @@ class OptionContractFactory:
     """
 
     # Abstract instrument -> contract specification mapping
+    # PRIMARY specs are preferred; FALLBACK specs are used when primary unavailable
     OPTION_SPECS: Dict[str, OptionContractSpec] = {
+        # =======================================================================
+        # US-LISTED OPTIONS (Available in paper trading)
+        # =======================================================================
         "vix_call": OptionContractSpec(
             underlying="VIX",
             option_type="CALL",
@@ -117,6 +121,128 @@ class OptionContractFactory:
             strike_offset_pct=0.15,  # 15% OTM for VIX calls
             description="VIX Index Call Option",
         ),
+        "spy_put": OptionContractSpec(
+            underlying="SPY",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=90,
+            preferred_dte=45,
+            strike_offset_pct=0.10,  # 10% OTM for SPY puts
+            description="SPY S&P 500 ETF Put Option",
+        ),
+        "hyg_put": OptionContractSpec(
+            underlying="HYG",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=30,
+            strike_offset_pct=0.05,  # 5% OTM for HYG puts
+            description="HYG High Yield ETF Put Option",
+        ),
+        # US-listed EU proxies (AVAILABLE in paper trading)
+        "ewg_put": OptionContractSpec(
+            underlying="EWG",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=90,
+            preferred_dte=45,
+            strike_offset_pct=0.10,  # 10% OTM
+            description="EWG Germany ETF Put Option (SX5E proxy)",
+        ),
+        "fez_put": OptionContractSpec(
+            underlying="FEZ",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=90,
+            preferred_dte=45,
+            strike_offset_pct=0.10,  # 10% OTM
+            description="FEZ Euro STOXX 50 ETF Put Option",
+        ),
+        "eufn_put": OptionContractSpec(
+            underlying="EUFN",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=45,
+            strike_offset_pct=0.15,  # 15% OTM for bank puts
+            description="EUFN EU Financials ETF Put Option",
+        ),
+        "ewi_put": OptionContractSpec(
+            underlying="EWI",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=45,
+            strike_offset_pct=0.15,  # 15% OTM
+            description="EWI Italy ETF Put Option (sovereign proxy)",
+        ),
+        "ewq_put": OptionContractSpec(
+            underlying="EWQ",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=45,
+            strike_offset_pct=0.15,  # 15% OTM
+            description="EWQ France ETF Put Option (sovereign proxy)",
+        ),
+        # Tradeable versions with explicit _tradeable suffix (match instruments.yaml)
+        "vix_call_tradeable": OptionContractSpec(
+            underlying="VIX",
+            option_type="CALL",
+            exchange="CBOE",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=30,
+            strike_offset_pct=0.15,
+            description="VIX Index Call Option (tradeable)",
+        ),
+        "hyg_put_tradeable": OptionContractSpec(
+            underlying="HYG",
+            option_type="PUT",
+            exchange="SMART",
+            currency="USD",
+            multiplier=100.0,
+            sec_type="OPT",
+            min_dte=20,
+            max_dte=60,
+            preferred_dte=30,
+            strike_offset_pct=0.05,
+            description="HYG High Yield ETF Put Option (tradeable)",
+        ),
+        # =======================================================================
+        # EUREX OPTIONS (NOT available in paper trading - use fallbacks)
+        # =======================================================================
         "vstoxx_call": OptionContractSpec(
             underlying="V2X",
             option_type="CALL",
@@ -156,20 +282,25 @@ class OptionContractFactory:
             strike_offset_pct=0.15,  # 15% OTM for EU bank puts
             description="Euro STOXX Banks Index Put Option",
         ),
-        "hyg_put": OptionContractSpec(
-            underlying="HYG",
-            option_type="PUT",
-            exchange="ARCA",
-            currency="USD",
-            multiplier=100.0,
-            sec_type="OPT",
-            min_dte=20,
-            max_dte=60,
-            preferred_dte=30,
-            strike_offset_pct=0.05,  # 5% OTM for HYG puts
-            description="HYG High Yield ETF Put Option",
-        ),
     }
+
+    # Mapping from EUREX abstract IDs to US-listed fallbacks
+    # Used when EUREX options are unavailable (e.g., paper trading)
+    # These IDs must match the `us_option_hedges` section in instruments.yaml
+    EUREX_TO_US_FALLBACK: Dict[str, str] = {
+        "vstoxx_call": "vix_call_tradeable",  # VSTOXX → VIX (vol exposure)
+        "sx5e_put": "fez_put",                # SX5E → FEZ (Euro STOXX 50 ETF)
+        "eu_bank_put": "eufn_put",            # SX7E → EUFN (EU financials ETF)
+    }
+
+    # US options that need no fallback (already tradeable)
+    US_TRADEABLE_OPTIONS = {
+        "vix_call_tradeable", "spy_put", "hyg_put_tradeable",
+        "fez_put", "ewg_put", "eufn_put", "ewi_put", "ewq_put"
+    }
+
+    # Check if instrument requires EUREX
+    EUREX_INSTRUMENTS = {"vstoxx_call", "sx5e_put", "eu_bank_put"}
 
     CACHE_FILE = "state/option_selections.json"
 
@@ -233,6 +364,7 @@ class OptionContractFactory:
         self,
         instrument_id: str,
         force_refresh: bool = False,
+        use_us_fallback: bool = True,
     ) -> Optional[OptionSelection]:
         """
         Get option contract for abstract instrument.
@@ -240,6 +372,7 @@ class OptionContractFactory:
         Args:
             instrument_id: Abstract instrument ID (e.g., 'vix_call')
             force_refresh: Force re-selection even if cached
+            use_us_fallback: If True, use US proxy when EUREX unavailable
 
         Returns:
             OptionSelection if found, None otherwise
@@ -262,11 +395,57 @@ class OptionContractFactory:
         # Select new contract
         selection = self._select_contract(instrument_id, spec)
 
+        # If selection failed and this is a EUREX instrument, try US fallback
+        if selection is None and use_us_fallback and instrument_id in self.EUREX_INSTRUMENTS:
+            fallback_id = self.EUREX_TO_US_FALLBACK.get(instrument_id)
+            if fallback_id:
+                logger.info(
+                    f"EUREX instrument {instrument_id} unavailable, "
+                    f"using US fallback: {fallback_id}"
+                )
+                fallback_spec = self.OPTION_SPECS.get(fallback_id)
+                if fallback_spec:
+                    selection = self._select_contract(fallback_id, fallback_spec)
+                    if selection:
+                        # Mark as fallback in the selection
+                        selection.symbol = f"{selection.symbol}_fallback_for_{instrument_id}"
+
         if selection:
             self._selections[instrument_id] = selection
             self._save_selections()
 
         return selection
+
+    def resolve_instrument_id(self, instrument_id: str) -> str:
+        """
+        Resolve abstract instrument ID to tradeable ID.
+
+        For EUREX instruments in paper trading, returns the US fallback.
+        For US instruments, returns as-is.
+
+        Args:
+            instrument_id: Abstract instrument ID
+
+        Returns:
+            Tradeable instrument ID (possibly a US fallback)
+        """
+        if instrument_id in self.EUREX_INSTRUMENTS:
+            # Check if we can trade EUREX (have valid cached selection with EUREX exchange)
+            cached = self._selections.get(instrument_id)
+            if cached and cached.exchange == "EUREX" and self._is_selection_valid(cached):
+                return instrument_id
+
+            # Use US fallback
+            fallback = self.EUREX_TO_US_FALLBACK.get(instrument_id)
+            if fallback:
+                logger.debug(f"Resolving {instrument_id} to US fallback: {fallback}")
+                return fallback
+
+        return instrument_id
+
+    def is_abstract_option(self, instrument_id: str) -> bool:
+        """Check if instrument ID is an abstract option that needs resolution."""
+        return instrument_id in self.OPTION_SPECS
 
     def _is_selection_valid(self, selection: OptionSelection) -> bool:
         """Check if a selection is still valid for trading."""

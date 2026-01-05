@@ -1023,5 +1023,335 @@ config/settings.yaml           # Configuration sections - MODIFIED
 
 ---
 
+---
+
+## Phase R: Documentation Accuracy & Feature Completion (Status: IN PROGRESS)
+
+**Date:** January 5, 2026
+
+**Goal:** Align documentation with reality, then implement missing features.
+
+**Problem Statement:** Audit on Jan 5, 2026 revealed significant gaps between documented capabilities and actual implementation. The strategy is running at ~40% of documented capability.
+
+---
+
+### Current State Assessment (Jan 5, 2026)
+
+| Feature | Docs Claim | Reality | Gap Severity |
+|---------|------------|---------|--------------|
+| **Europe Vol Convex (18%)** | VSTOXX calls, SX5E puts, EU bank puts | `tradeable: false` - NOT TRADING | **CRITICAL** |
+| **Sector Pairs** | Factor-neutral XLF/EXV1, XLK/EXV3 | Falling back to legacy ETFs | **HIGH** |
+| **Sovereign Overlay** | EWI, EWQ, FXE, EUFN put spreads | Enabled but 0 orders generated | **MEDIUM** |
+| **Risk Parity** | Inverse-vol weighting | Working (scaling 1.7x observed) | OK |
+| **Credit Carry (8%)** | LQDE, IHYU, FLOT, ARCC | Positions exist | OK |
+| **Core Index RV** | CSPX long, CS51 short | CSPX long visible, CS51 unclear | **LOW** |
+| **FX Hedge (M6E)** | Micro EUR/USD futures | No FX futures in positions | **MEDIUM** |
+
+**Actual Portfolio Allocation (vs Documented):**
+```
+Documented:                    Actual:
+├── Core Index RV:    20%     ├── Core Index RV:    ~12%
+├── Sector RV:        20%     ├── Legacy EU Short:  ~10%
+├── Europe Vol:       18%     ├── Europe Vol:        0% ❌
+├── Credit Carry:      8%     ├── Credit Carry:     ~10%
+├── Money Market:     34%     └── Cash/Uninvested:  ~68%
+└── Total:           100%
+```
+
+---
+
+### R.1: Documentation Honesty Update (Priority: IMMEDIATE) ⏳
+
+**Goal:** Update all docs to accurately reflect current state.
+
+**Deliverables:**
+
+1. **INVESTMENT_STRATEGY.md Updates:**
+   - Add "Current Implementation Status" section at top
+   - Mark Europe Vol Convex as "PLANNED - NOT YET IMPLEMENTED"
+   - Mark Sector Pairs as "PARTIAL - Falling back to legacy"
+   - Mark Sovereign Overlay as "ENABLED - Awaiting stress conditions"
+   - Update sleeve weights to show actual vs target
+
+2. **CLAUDE.md Updates:**
+   - Add "Known Limitations" section
+   - Document that options are placeholders
+   - Document sector pairs fallback behavior
+
+3. **README.md Updates:**
+   - Add honest "Implementation Status" badge
+   - Clarify paper trading is validating core logic, not full strategy
+
+4. **instruments.yaml Comments:**
+   - Add clear warnings on placeholder instruments
+   - Document which instruments are actually trading
+
+**Acceptance Criteria:**
+- [ ] All docs have "Implementation Status" section
+- [ ] No doc claims functionality that doesn't exist
+- [ ] Clear distinction between "designed" vs "implemented"
+
+**Effort:** 1 day
+
+---
+
+### R.2: Options Contract Factory (Priority: CRITICAL) ⏳
+
+**Goal:** Implement proper options trading for Europe Vol Convex sleeve.
+
+**Why Critical:** 18% of documented strategy allocation is non-functional. This is the PRIMARY insurance channel.
+
+**Current Blocker:**
+```yaml
+# instruments.yaml line 433-434
+# NOTE: These are NOT tradeable directly - option trading requires proper contract specs
+# TODO: Implement proper option contract factory to convert placeholders to real options
+```
+
+**Deliverables:**
+
+1. **`src/options/contract_factory.py`** (NEW):
+   - Generate valid IBKR option contracts from specifications
+   - Handle VSTOXX options (OVS2 on EUREX)
+   - Handle SX5E options (OESX on EUREX)
+   - Handle US-listed proxies (SPY, EWG, EUFN options)
+   - Proper expiry selection (target DTE, roll logic)
+   - Strike selection (OTM % based on config)
+
+2. **`src/options/chain_fetcher.py`** (NEW):
+   - Fetch option chains from IBKR
+   - Filter by DTE, strike, liquidity
+   - Cache chains to reduce API calls
+
+3. **Update `src/tail_hedge.py`:**
+   - Replace placeholder logic with contract factory calls
+   - Generate real option orders
+   - Integrate with execution stack
+
+4. **Update `instruments.yaml`:**
+   - Change `tradeable: false` to `tradeable: true`
+   - Add proper contract specifications
+
+5. **Paper Account Validation:**
+   - Verify EUREX options available in paper account
+   - If not, use US-listed proxies (SPY puts, VIX calls)
+
+**Acceptance Criteria:**
+- [ ] Options contract factory generates valid IBKR contracts
+- [ ] At least one options position opened in paper account
+- [ ] Option orders flow through execution stack
+- [ ] Roll logic works at target DTE
+
+**Effort:** 3-5 days
+
+---
+
+### R.3: Sector Pairs Execution Fix (Priority: HIGH) ⏳
+
+**Goal:** Ensure sector pairs execute instead of falling back to legacy ETFs.
+
+**Current State:**
+- `sector_pairs.enabled: true` in settings
+- SectorPairEngine exists
+- But positions show legacy ETFs (EXS1, IUKD) not sector pairs (XLF, XLK)
+
+**Investigation Needed:**
+1. Why is SectorPairEngine failing/skipping?
+2. Is fallback happening silently?
+3. Are US sector ETFs (XLF, XLK) being rejected?
+
+**Deliverables:**
+
+1. **Debug logging in `src/strategy_logic.py`:**
+   - Log when SectorPairEngine is called
+   - Log when fallback to legacy occurs
+   - Log rejection reasons
+
+2. **Fix root cause** (TBD after investigation):
+   - Could be: US ETFs not in UCITS → blocked for EU account
+   - Could be: Beta data missing
+   - Could be: Liquidity filter rejecting
+
+3. **Alternative if US ETFs blocked:**
+   - Use EU-listed equivalents
+   - Or accept legacy baskets with documentation
+
+**Acceptance Criteria:**
+- [ ] Clear logging shows sector pair vs legacy decision
+- [ ] Either sector pairs trade OR documented why not
+- [ ] No silent fallback
+
+**Effort:** 1-2 days
+
+---
+
+### R.4: Sovereign Overlay Activation (Priority: MEDIUM) ⏳
+
+**Goal:** Verify sovereign overlay generates orders when conditions met.
+
+**Current State:**
+- `sovereign_overlay.enabled: true`
+- `sovereign_orders: 0` in logs
+- Likely: stress level too low to trigger
+
+**Deliverables:**
+
+1. **Add stress level logging:**
+   - Log current stress scores for EWI, EWQ, FXE, EUFN
+   - Log threshold comparison
+   - Explain why orders are/aren't generated
+
+2. **Verify with forced stress test:**
+   - Temporarily lower thresholds
+   - Confirm orders generate
+   - Restore thresholds
+
+3. **Documentation update:**
+   - Document that overlay only activates in stress
+   - Add expected behavior in normal conditions
+
+**Acceptance Criteria:**
+- [ ] Stress levels visible in logs
+- [ ] Orders confirmed to generate when thresholds crossed
+- [ ] Documentation explains normal-condition behavior
+
+**Effort:** 1 day
+
+---
+
+### R.5: FX Hedge Position Verification (Priority: MEDIUM) ⏳
+
+**Goal:** Confirm FX hedging is working as designed.
+
+**Current State:**
+- No M6E (EUR/USD micro futures) visible in positions
+- Could be: hedge not needed (exposure within tolerance)
+- Could be: hedge logic not running
+
+**Deliverables:**
+
+1. **Add FX exposure logging:**
+   - Log gross EUR/GBP exposure
+   - Log hedge mode (FULL/PARTIAL/NONE)
+   - Log residual exposure vs target
+
+2. **Verify hedge calculation:**
+   - Check if current exposure within PARTIAL tolerance (25%)
+   - If within tolerance, no hedge needed (correct behavior)
+   - Document this in logs
+
+3. **Force test if needed:**
+   - Temporarily set mode to FULL
+   - Confirm M6E orders generate
+
+**Acceptance Criteria:**
+- [ ] FX exposure logged each run
+- [ ] Hedge decision explained in logs
+- [ ] Confirmed working or documented why not needed
+
+**Effort:** 0.5 days
+
+---
+
+### R.6: Core Index Verification (Priority: LOW) ⏳
+
+**Goal:** Confirm CS51 short leg of Core Index RV.
+
+**Current State:**
+- CSPX long: 38 shares visible
+- CS51 short: Not visible in current positions
+
+**Possible Explanations:**
+1. CS51 position closed (filled during EU_open)
+2. CS51 on different exchange not showing
+3. Core Index RV sized down due to trend filter
+
+**Deliverables:**
+
+1. **Check historical fills:**
+   - Look for CS51 executions in logs
+   - Confirm sizing logic
+
+2. **Log target vs actual:**
+   - Log Core Index RV targets each run
+   - Log actual positions
+
+**Effort:** 0.5 days
+
+---
+
+### R.7: Create Honest Status Dashboard (Priority: LOW) ⏳
+
+**Goal:** Real-time visibility into what's actually running.
+
+**Deliverables:**
+
+1. **Add to daily summary alert:**
+   ```
+   Strategy Status:
+   ├── Core Index RV:    ✓ Active (CSPX: 38, CS51: -22)
+   ├── Sector RV:        ⚠ Fallback (using legacy ETFs)
+   ├── Europe Vol:       ✗ Disabled (options not implemented)
+   ├── Credit Carry:     ✓ Active (4 positions)
+   ├── Sovereign:        ○ Standby (stress < threshold)
+   └── Risk Parity:      ✓ Active (scaling: 1.7x)
+   ```
+
+2. **Grafana panel:**
+   - Show documented vs actual allocation
+   - Flag non-functional features
+
+**Effort:** 1 day
+
+---
+
+### Execution Order
+
+| Order | Phase | Priority | Dependency | Effort |
+|-------|-------|----------|------------|--------|
+| 1 | **R.1: Docs Honesty** | IMMEDIATE | None | 1 day |
+| 2 | **R.2: Options Factory** | CRITICAL | None | 3-5 days |
+| 3 | **R.3: Sector Pairs Fix** | HIGH | None | 1-2 days |
+| 4 | **R.4: Sovereign Verify** | MEDIUM | None | 1 day |
+| 5 | **R.5: FX Hedge Verify** | MEDIUM | None | 0.5 days |
+| 6 | **R.6: Core Index Verify** | LOW | None | 0.5 days |
+| 7 | **R.7: Status Dashboard** | LOW | R.1-R.6 | 1 day |
+
+**Recommended Timeline:**
+- Week 1: R.1 (docs) + R.3 (sector pairs) + R.4-R.6 (verifications)
+- Week 2-3: R.2 (options factory - critical path)
+- Week 4: R.7 (dashboard) + integration testing
+
+---
+
+### Definition of Done (Phase R)
+
+All phases complete when:
+
+- [ ] All documentation accurately reflects implementation status
+- [ ] Europe Vol Convex sleeve is trading real options
+- [ ] Sector pairs either trade or documented why not
+- [ ] FX hedge logging shows exposure management
+- [ ] Status dashboard shows actual vs documented allocation
+- [ ] No doc claims "COMPLETE" for unimplemented features
+
+---
+
+### Risk Considerations
+
+| Risk | Mitigation |
+|------|------------|
+| EUREX options not available in paper account | Use US-listed proxies (SPY, VIX, EUFN options) |
+| US sector ETFs blocked for EU accounts | Use EU-listed sector ETFs or accept legacy |
+| Options implementation delays burn-in | Core strategy still validates; options add later |
+| Sovereign overlay never triggers in paper | Force-test with lowered thresholds |
+
+---
+
+*Phase R added: 2026-01-05*
+*Status: IN PROGRESS*
+
+---
+
 *Document created: 2025-12-16*
 *Last updated: 2026-01-05*

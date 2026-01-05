@@ -2,46 +2,177 @@
 
 This file provides context for Claude Code when working on AbstractFinance.
 
-## 1Password MCP Server
+---
 
-Secrets are managed via a dedicated 1Password MCP server at `91.99.97.249:8080`.
+## Known Limitations (Honest Assessment - Jan 5, 2026)
 
-### Fetching Secrets
+> **IMPORTANT:** The strategy documentation describes the *design*, not the current *implementation*.
+
+### Critical Gaps
+
+| Feature | Status | Impact |
+|---------|--------|--------|
+| **Europe Vol Convex (18%)** | NOT TRADING | Options marked `tradeable: false` in instruments.yaml. The PRIMARY insurance channel is non-functional. |
+| **Options Contract Factory** | NOT IMPLEMENTED | No code exists to generate real IBKR option contracts from placeholder specs. |
+| **EUREX Access** | BLOCKED | Paper trading account cannot trade VSTOXX/SX5E options. Must use US-listed proxies. |
+
+### Partial Implementation
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| **Sector Pairs** | FALLBACK MODE | SectorPairEngine exists but falls back to legacy ETFs (EXS1, IUKD). US ETFs may be blocked for EU accounts. |
+| **Sovereign Overlay** | STANDBY | Enabled but 0 orders generated. Stress thresholds not met in current market. |
+| **FX Hedging** | UNCLEAR | M6E positions not visible. May be correct (within PARTIAL tolerance) or not running. |
+
+### What Paper Trading Is Actually Validating
+
+The 60-day burn-in validates:
+- Order execution reliability (fills, rejections, edge cases)
+- Position sizing correctness
+- Risk scaling behavior (vol burn-in, clamping)
+- Gateway auto-recovery
+
+The burn-in does **NOT** validate:
+- Full strategy capability (only ~40% implemented)
+- Options insurance payoff
+- Factor-neutral sector pair behavior
+
+### Phase R Required Before Production
+
+See `docs/ROADMAP.md` Phase R for the implementation plan:
+- R.1: Documentation honesty (IN PROGRESS)
+- R.2: Options contract factory (CRITICAL - 3-5 days)
+- R.3: Sector pairs debugging (HIGH - 1-2 days)
+- R.4-R.7: Various verifications
+
+---
+
+## 1Password Secrets Management (Secure)
+
+Secrets are managed via 1Password using the **`op run`** pattern. This ensures credentials are:
+- Never stored in plaintext on disk
+- Never visible to Claude or in logs
+- Injected directly into process memory at runtime
+- Purged from memory when the process exits
+
+### Architecture
+
+```
+.env.template (contains op:// references, NOT actual secrets)
+         ↓
+op run --env-file=.env.template -- docker compose up
+         ↓
+Secrets resolved in memory → injected into container environment
+         ↓
+Secrets purged when container stops
+```
+
+### Server Setup (For New Servers)
+
+#### Step 1: Install 1Password CLI
 
 ```bash
-# Health check
-curl http://91.99.97.249:8080/health
+# Download and install op CLI
+curl -sSfLo /tmp/op.zip "https://cache.agilebits.com/dist/1P/op2/pkg/v2.32.0/op_linux_amd64_v2.32.0.zip"
+cd /tmp && unzip -o op.zip && mv op /usr/local/bin/ && chmod +x /usr/local/bin/op
+op --version
+```
 
-# Get a secret (requires API key in Authorization header)
-curl -H "Authorization: Bearer $MCP_API_KEY" \
-  "http://91.99.97.249:8080/secret/Ai/hetzner-cloud/token"
+#### Step 2: Configure Service Account
+
+```bash
+# Get the service account token (stored securely, not shown here)
+# Create /etc/profile.d/1password.sh with:
+echo 'export OP_SERVICE_ACCOUNT_TOKEN=<token>' > /etc/profile.d/1password.sh
+chmod 600 /etc/profile.d/1password.sh
+
+# Verify access
+source /etc/profile.d/1password.sh
+op vault list  # Should show "Ai" vault
+```
+
+#### Step 3: Create .env.template
+
+Create `/srv/abstractfinance/.env.template` with secret references:
+
+```bash
+# Example for staging (paper trading)
+IBKR_USERNAME=op://Ai/ibkr.staging/username
+IBKR_PASSWORD=op://Ai/ibkr.staging/password
+IBKR_TOTP_KEY=op://Ai/ibkr.staging.totp-key/password
+IBKR_ACCOUNT_ID=DUO775682
+IBKR_PORT=4004
+TRADING_MODE=Paper Trading
+
+# Example for production (live trading)
+IBKR_USERNAME=op://Ai/InteractivebrokersClaude/username
+IBKR_PASSWORD=op://Ai/InteractivebrokersClaude/password
+IBKR_TOTP_KEY=op://Ai/InteractivebrokersClaude/2fa
+IBKR_PORT=4001
+TRADING_MODE=Live
+```
+
+#### Step 4: Create Docker Compose Wrapper
+
+Create `/srv/abstractfinance/dc`:
+
+```bash
+#!/bin/bash
+# Docker Compose wrapper that injects secrets from 1Password
+set -e
+source /etc/profile.d/1password.sh
+cd /srv/abstractfinance
+exec op run --env-file=.env.template -- docker compose "$@"
+```
+
+```bash
+chmod +x /srv/abstractfinance/dc
+```
+
+#### Step 5: Usage
+
+```bash
+# Start services (secrets injected at runtime)
+./dc up -d ibgateway trading-engine
+
+# View logs
+./dc logs --tail=50 trading-engine
+
+# Stop services
+./dc down
 ```
 
 ### Available Secrets in "Ai" Vault
 
 | Item | Field | Description |
 |------|-------|-------------|
+| `InteractivebrokersClaude` | `username`, `password`, `2fa` | Live IBKR credentials |
+| `ibkr.staging` | `username`, `password` | Paper trading credentials |
+| `ibkr.staging.totp-key` | `password` | Paper trading TOTP |
 | `hetzner-cloud` | `token` | Hetzner Cloud API token |
-| `hummingbot` | `password` | Hummingbot MCP password |
-| `supabase` | `token` | Supabase bearer token |
-| `mcp-api-key` | `password` | API key for the MCP server itself |
+| `telegram.bot-token` | `credential` | Telegram bot token |
+| `telegram.chat-id` | `password` | Telegram chat ID |
+| `db.staging.password` | `password` | Database password |
+| `grafana.admin.password` | `password` | Grafana admin password |
 
-### For Trading Infrastructure
+### Adding New Secrets
 
-Use the `AF - Trading Infra - Staging` vault for IBKR credentials:
+1. Add the secret to 1Password in the "Ai" vault
+2. Update `.env.template` with the `op://Ai/<item>/<field>` reference
+3. Restart services with `./dc up -d`
 
-```bash
-# Fetch .env for staging server
-op read "op://AF - Trading Infra - Staging/abstractfinance.staging.env/notesPlain"
-```
+### Security Notes
+
+- **NEVER** create plaintext `.env` files on servers
+- **NEVER** use the old MCP HTTP server (91.99.97.249:8080) - it exposes secrets in responses
+- The `./dc` wrapper ensures secrets are only in memory during runtime
+- Service account token in `/etc/profile.d/1password.sh` is the only sensitive file
 
 ## Vaults
 
 | Vault | Purpose |
 |-------|---------|
-| `Ai` | Claude Code MCP secrets |
-| `AF - Trading Infra - Staging` | Paper trading secrets |
-| `AF - Trading Infra - Prod` | Live trading (future) |
+| `Ai` | All trading infrastructure secrets (IBKR, Telegram, DB, etc.) |
 
 ## Servers
 
@@ -56,22 +187,25 @@ SSH access: `ssh root@94.130.228.55`
 ## Key Commands
 
 ```bash
-# Check trading status
-ssh root@94.130.228.55 "docker compose -f /srv/abstractfinance/docker-compose.yml ps"
+# Check trading status (staging)
+ssh root@94.130.228.55 "cd /srv/abstractfinance && ./dc ps"
 
-# View logs
-ssh root@94.130.228.55 "docker compose -f /srv/abstractfinance/docker-compose.yml logs --tail=50 trading-engine"
+# View logs (staging)
+ssh root@94.130.228.55 "cd /srv/abstractfinance && ./dc logs --tail=50 trading-engine"
 
-# Check 1Password MCP server
-curl http://91.99.97.249:8080/health
+# Start services with secrets (staging)
+ssh root@94.130.228.55 "cd /srv/abstractfinance && ./dc up -d ibgateway trading-engine"
+
+# Check trading status (production)
+ssh root@91.99.116.196 "cd /srv/abstractfinance && ./dc ps"
 ```
 
 ## Important Notes
 
-- NEVER commit .env files or plaintext credentials
-- All secrets flow from 1Password via MCP server
-- Launch Claude Code with `~/.claude/launch-claude.sh` to inject secrets
-- GitHub Actions auto-refreshes .env on deploy
+- **NEVER** commit `.env` files or plaintext credentials
+- **NEVER** create plaintext `.env` files on servers - use `.env.template` with `op://` references
+- All secrets flow from 1Password via `op run` at runtime
+- Use the `./dc` wrapper instead of `docker compose` directly
 
 ---
 
@@ -202,9 +336,9 @@ Burn-in data is stored in **files only** (no database persistence implemented):
 
 ### Known Issues
 
-1. **Returns data gap (Jan 1-4)** - Gateway was down, no data collected
-2. **Outlier return Dec 13** - Shows -6724% return (bug, needs cleanup)
-3. **No database persistence** - All data in files only
+1. **Returns data gap (Jan 1-4)** - FIXED: Interpolated 7 trading days based on NAV delta
+2. **Outlier return Dec 13** - FIXED: Cleaned returns_history.csv (was bogus test data)
+3. **No database persistence** - All data in files only (by design for now)
 
 ---
 

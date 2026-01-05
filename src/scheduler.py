@@ -87,6 +87,13 @@ try:
 except ImportError:
     METRICS_AVAILABLE = False
 
+# Option Contract Factory for resolving abstract options to tradeable contracts
+try:
+    from .contracts.option_factory import OptionContractFactory, OptionSelection
+    OPTION_FACTORY_AVAILABLE = True
+except ImportError:
+    OPTION_FACTORY_AVAILABLE = False
+
 
 # =============================================================================
 # IBKR Maintenance Window Configuration
@@ -284,6 +291,13 @@ class DailyScheduler:
 
         # Legacy Unwind Glidepath for gradual position transitions
         self.legacy_glidepath: Optional[LegacyUnwindGlidepath] = None
+
+        # ROADMAP Phase R.2: Option Contract Factory for resolving abstract options
+        self.option_factory: Optional[OptionContractFactory] = None
+        if OPTION_FACTORY_AVAILABLE:
+            self.option_factory = OptionContractFactory(
+                cache_file=str(self.state_dir / "option_selections.json")
+            )
 
     def initialize(self) -> bool:
         """
@@ -1664,35 +1678,57 @@ class DailyScheduler:
         for order in orders:
             # Check if instrument is tradeable (skip placeholders like option hedges)
             spec = self._find_instrument_spec(order.instrument_id)
+            resolved_instrument_id = order.instrument_id
+
             if spec and spec.get('tradeable') is False:
-                self.logger.logger.info(
-                    f"Skipping non-tradeable placeholder: {order.instrument_id}"
-                )
-                summary["skipped_non_tradeable"] = summary.get("skipped_non_tradeable", 0) + 1
-                continue
+                # Check if this is an abstract option that can be resolved via factory
+                if self.option_factory and self.option_factory.is_abstract_option(order.instrument_id):
+                    # Resolve abstract option to tradeable contract
+                    resolved_instrument_id = self.option_factory.resolve_instrument_id(order.instrument_id)
+                    if resolved_instrument_id != order.instrument_id:
+                        self.logger.logger.info(
+                            f"Resolved abstract option {order.instrument_id} -> {resolved_instrument_id}"
+                        )
+                        summary["resolved_options"] = summary.get("resolved_options", 0) + 1
+                    else:
+                        # Could not resolve, skip
+                        self.logger.logger.info(
+                            f"Skipping unresolvable option placeholder: {order.instrument_id}"
+                        )
+                        summary["skipped_non_tradeable"] = summary.get("skipped_non_tradeable", 0) + 1
+                        continue
+                else:
+                    # Not an option, just skip
+                    self.logger.logger.info(
+                        f"Skipping non-tradeable placeholder: {order.instrument_id}"
+                    )
+                    summary["skipped_non_tradeable"] = summary.get("skipped_non_tradeable", 0) + 1
+                    continue
 
             # Get current price for netting calculations
+            # Use resolved instrument ID for price lookup
             price = None
             try:
-                price = self.data_feed.get_last_price(order.instrument_id)
+                price = self.data_feed.get_last_price(resolved_instrument_id)
             except Exception as e:
-                self.logger.logger.debug(f"Price fetch failed for {order.instrument_id}: {e}")
+                self.logger.logger.debug(f"Price fetch failed for {resolved_instrument_id}: {e}")
             if not price:
                 # Fallback 1: Try portfolio position price directly
-                price = position_prices.get(order.instrument_id)
+                price = position_prices.get(resolved_instrument_id)
             if not price:
                 # Fallback 2: Map config ID to IBKR symbol and look up
-                ibkr_symbol = config_to_symbol.get(order.instrument_id)
+                ibkr_symbol = config_to_symbol.get(resolved_instrument_id)
                 if ibkr_symbol:
                     price = position_prices.get(ibkr_symbol)
             if price:
-                prices[order.instrument_id] = price
+                prices[resolved_instrument_id] = price
 
+            # Use resolved instrument ID for the intent
             intent = OrderIntent(
-                instrument_id=order.instrument_id,
+                instrument_id=resolved_instrument_id,
                 side=order.side,
                 quantity=int(abs(order.quantity)),
-                reason=getattr(order, 'reason', 'rebalance'),
+                reason=getattr(order, 'reason', f'rebalance (from {order.instrument_id})' if resolved_instrument_id != order.instrument_id else 'rebalance'),
                 sleeve=getattr(order, 'sleeve', 'unknown'),
                 urgency="normal",
             )

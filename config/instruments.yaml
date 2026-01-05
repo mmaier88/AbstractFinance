@@ -488,6 +488,102 @@ option_hedges:
     tradeable: false            # Placeholder only - skip during execution
     description: "HYG Put Option placeholder - prices via HYG ETF"
 
+# =============================================================================
+# US-Listed Tradeable Options (ROADMAP Phase R.2)
+# =============================================================================
+# These are US-listed ETF options that CAN be traded in paper trading.
+# They serve as proxies for EUREX options that are unavailable in paper mode.
+# The OptionContractFactory resolves abstract IDs (vstoxx_call, sx5e_put, etc.)
+# to these tradeable instruments.
+us_option_hedges:
+  # VIX calls - proxy for VSTOXX (Europe vol)
+  vix_call_tradeable:
+    symbol: "VIX"
+    exchange: "CBOE"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "CALL"
+    tradeable: true
+    description: "VIX Index Call Option - tradeable"
+
+  # FEZ puts - proxy for SX5E (Euro STOXX 50)
+  fez_put:
+    symbol: "FEZ"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "FEZ Euro STOXX 50 ETF Put Option"
+
+  # EWG puts - proxy for DAX/German equity
+  ewg_put:
+    symbol: "EWG"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "EWG Germany ETF Put Option (DAX proxy)"
+
+  # EUFN puts - proxy for EU bank (SX7E)
+  eufn_put:
+    symbol: "EUFN"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "EUFN EU Financials ETF Put Option"
+
+  # SPY puts - US equity hedge
+  spy_put:
+    symbol: "SPY"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "SPY S&P 500 ETF Put Option"
+
+  # HYG puts - US credit hedge (tradeable version)
+  hyg_put_tradeable:
+    symbol: "HYG"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "HYG High Yield ETF Put Option - tradeable"
+
+  # EWI puts - Italy sovereign proxy
+  ewi_put:
+    symbol: "EWI"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "EWI Italy ETF Put Option (sovereign proxy)"
+
+  # EWQ puts - France sovereign proxy
+  ewq_put:
+    symbol: "EWQ"
+    exchange: "SMART"
+    sec_type: "OPT"
+    currency: "USD"
+    multiplier: 100.0
+    option_type: "PUT"
+    tradeable: true
+    description: "EWQ France ETF Put Option (sovereign proxy)"
+
 europe_vol_structures:
   # EURO STOXX 50 Options (OESX) - PRIMARY for Europe insurance puts
   # Contract specs: EUR 10 per index point, European-style, cash-settled
@@ -589,39 +685,28 @@ single_stocks:
 # Same-sector US vs EU pairs to isolate regional beta
 # Key insight: US Tech vs EU Banks = regional + growth/value + duration + sector
 # Same-sector pairs (US Banks vs EU Banks) = pure regional bet
+#
+# IMPORTANT: US sector ETFs (XLF, XLK, XLI, XLV) are NOT tradeable from EU accounts
+# due to PRIIPs/KID regulations. We use UCITS alternatives where available.
 sector_pairs:
-  # Financials - beta-matched banking exposure
-  financials:
-    us:
-      symbol: "XLF"
-      exchange: "ARCA"
-      sec_type: "STK"
-      currency: "USD"
-      beta: 1.1
-      growth_exposure: -0.2
-      value_exposure: 0.3
-      description: "Financial Select Sector SPDR"
-    eu:
-      symbol: "EXV1"
-      exchange: "XETRA"
-      sec_type: "STK"
-      currency: "EUR"
-      beta: 1.4
-      growth_exposure: -0.4
-      value_exposure: 0.5
-      description: "iShares STOXX Europe 600 Banks"
+  # Financials - DISABLED (no UCITS equivalent for XLF)
+  # financials:
+  #   us:
+  #     symbol: "XLF"  # NOT TRADEABLE FROM EU - NO KID AVAILABLE
+  #   eu:
+  #     symbol: "EXV1"
 
-  # Technology - growth-neutral tech exposure
+  # Technology - UCITS ENABLED
   technology:
     us:
-      symbol: "XLK"
-      exchange: "ARCA"
+      symbol: "IUIT"        # iShares S&P 500 IT Sector UCITS ETF (LSE)
+      exchange: "LSE"       # London Stock Exchange (UCITS compliant)
       sec_type: "STK"
       currency: "USD"
       beta: 1.2
       growth_exposure: 0.6
       value_exposure: -0.3
-      description: "Technology Select Sector SPDR"
+      description: "iShares S&P 500 IT Sector UCITS ETF"
     eu:
       symbol: "EXV3"
       exchange: "XETRA"
@@ -632,38 +717,24 @@ sector_pairs:
       value_exposure: -0.2
       description: "iShares STOXX Europe 600 Technology"
 
-  # Industrials - cyclical exposure matched
-  industrials:
-    us:
-      symbol: "XLI"
-      exchange: "ARCA"
-      sec_type: "STK"
-      currency: "USD"
-      beta: 1.15
-      growth_exposure: 0.1
-      value_exposure: 0.1
-      description: "Industrial Select Sector SPDR"
-    eu:
-      symbol: "EXH1"
-      exchange: "XETRA"
-      sec_type: "STK"
-      currency: "EUR"
-      beta: 1.2
-      growth_exposure: 0.0
-      value_exposure: 0.2
-      description: "iShares STOXX Europe 600 Industrial Goods"
+  # Industrials - DISABLED (no UCITS equivalent for XLI)
+  # industrials:
+  #   us:
+  #     symbol: "XLI"  # NOT TRADEABLE FROM EU - NO KID AVAILABLE
+  #   eu:
+  #     symbol: "EXH1"
 
-  # Healthcare - defensive exposure matched
+  # Healthcare - UCITS ENABLED
   healthcare:
     us:
-      symbol: "XLV"
-      exchange: "ARCA"
+      symbol: "IUHC"        # iShares S&P 500 Health Care UCITS ETF (LSE)
+      exchange: "LSE"       # London Stock Exchange (UCITS compliant)
       sec_type: "STK"
       currency: "USD"
       beta: 0.85
       growth_exposure: 0.2
       value_exposure: 0.1
-      description: "Health Care Select Sector SPDR"
+      description: "iShares S&P 500 Health Care UCITS ETF"
     eu:
       symbol: "EXV4"
       exchange: "XETRA"

@@ -83,31 +83,25 @@ class SectorPairPosition:
 
 # Predefined sector pairs with estimated parameters
 # These should be calibrated periodically with actual data
+#
+# IMPORTANT: US sector ETFs (XLF, XLK, XLI, XLV) are NOT tradeable from EU accounts
+# due to PRIIPs/KID regulations. We use UCITS alternatives where available:
+# - XLK -> IUIT (iShares S&P 500 IT Sector UCITS ETF, LSE)
+# - XLV -> IUHC (iShares S&P 500 Health Care UCITS ETF, LSE)
+# - XLF -> No direct UCITS equivalent (pair DISABLED)
+# - XLI -> No direct UCITS equivalent (pair DISABLED)
+#
 SECTOR_PAIRS = {
-    Sector.FINANCIALS: SectorPair(
-        sector=Sector.FINANCIALS,
-        us_symbol="XLF",      # Financial Select Sector SPDR
-        eu_symbol="EXV1",     # iShares STOXX Europe 600 Banks
-        us_name="US Financials",
-        eu_name="EU Banks",
-        us_beta=1.1,
-        eu_beta=1.4,
-        beta_ratio=1.27,
-        us_growth_exposure=-0.2,  # Value-tilted
-        eu_growth_exposure=-0.4,
-        us_value_exposure=0.3,
-        eu_value_exposure=0.5,
-        us_avg_spread_bps=2.0,
-        eu_avg_spread_bps=4.0,
-        us_avg_daily_volume=50_000_000,
-        eu_avg_daily_volume=5_000_000,
-    ),
+    # FINANCIALS: DISABLED - No UCITS equivalent for XLF available from EU accounts
+    # US S&P 500 Financials sector ETFs require KID which isn't provided
+    # Keeping definition for reference but marked as unavailable
+    # Sector.FINANCIALS: SectorPair(...),  # DISABLED
 
     Sector.TECHNOLOGY: SectorPair(
         sector=Sector.TECHNOLOGY,
-        us_symbol="XLK",      # Technology Select Sector SPDR
+        us_symbol="IUIT",     # iShares S&P 500 IT Sector UCITS ETF (LSE)
         eu_symbol="EXV3",     # iShares STOXX Europe 600 Technology
-        us_name="US Technology",
+        us_name="US Technology (UCITS)",
         eu_name="EU Technology",
         us_beta=1.2,
         eu_beta=1.1,
@@ -116,36 +110,20 @@ SECTOR_PAIRS = {
         eu_growth_exposure=0.4,
         us_value_exposure=-0.3,
         eu_value_exposure=-0.2,
-        us_avg_spread_bps=2.0,
+        us_avg_spread_bps=5.0,   # UCITS typically wider spreads
         eu_avg_spread_bps=5.0,
-        us_avg_daily_volume=30_000_000,
+        us_avg_daily_volume=5_000_000,  # Lower volume for UCITS
         eu_avg_daily_volume=2_000_000,
     ),
 
-    Sector.INDUSTRIALS: SectorPair(
-        sector=Sector.INDUSTRIALS,
-        us_symbol="XLI",      # Industrial Select Sector SPDR
-        eu_symbol="EXH1",     # iShares STOXX Europe 600 Industrial Goods
-        us_name="US Industrials",
-        eu_name="EU Industrials",
-        us_beta=1.15,
-        eu_beta=1.2,
-        beta_ratio=1.04,
-        us_growth_exposure=0.1,
-        eu_growth_exposure=0.0,
-        us_value_exposure=0.1,
-        eu_value_exposure=0.2,
-        us_avg_spread_bps=2.0,
-        eu_avg_spread_bps=4.0,
-        us_avg_daily_volume=25_000_000,
-        eu_avg_daily_volume=3_000_000,
-    ),
+    # INDUSTRIALS: DISABLED - No UCITS equivalent for XLI available from EU accounts
+    # Sector.INDUSTRIALS: SectorPair(...),  # DISABLED
 
     Sector.HEALTHCARE: SectorPair(
         sector=Sector.HEALTHCARE,
-        us_symbol="XLV",      # Health Care Select Sector SPDR
+        us_symbol="IUHC",     # iShares S&P 500 Health Care UCITS ETF (LSE)
         eu_symbol="EXV4",     # iShares STOXX Europe 600 Health Care
-        us_name="US Healthcare",
+        us_name="US Healthcare (UCITS)",
         eu_name="EU Healthcare",
         us_beta=0.85,
         eu_beta=0.8,

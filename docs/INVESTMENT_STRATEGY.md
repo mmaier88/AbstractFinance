@@ -2,9 +2,63 @@
 
 ## "Insurance for Europeans" - European Decline Macro Fund
 
-**Version:** 2.2 (Portfolio Simplification)
-**Last Updated:** December 2025
+**Version:** 2.3 (Risk Parity + Sovereign Overlay)
+**Last Updated:** January 2026
 **Status:** Paper Trading (Staging)
+
+---
+
+## Implementation Status (Honest Assessment)
+
+> **Last Audit:** January 5, 2026 | **Day 17 of 60-day burn-in**
+
+This section documents the gap between documented capabilities and actual implementation. The strategy is currently running at approximately **40% of documented capability**.
+
+### Status by Feature
+
+| Feature | Documented | Actual Status | Severity |
+|---------|-----------|---------------|----------|
+| **Europe Vol Convex (18%)** | VSTOXX calls, SX5E puts, EU bank puts | **NOT TRADING** - options marked `tradeable: false` | **CRITICAL** |
+| **Sector Pairs** | Factor-neutral XLF/EXV1, XLK/EXV3 pairs | **FALLBACK** - using legacy ETFs (EXS1, IUKD) | **HIGH** |
+| **Sovereign Overlay** | EWI, EWQ, FXE, EUFN put spreads | **STANDBY** - enabled but 0 orders (stress < threshold) | MEDIUM |
+| **Risk Parity** | Inverse-vol weighting | **WORKING** - scaling factor 1.7x observed | OK |
+| **Credit Carry (8%)** | LQDE, IHYU, FLOT, ARCC | **WORKING** - positions exist | OK |
+| **Core Index RV** | CSPX long, CS51 short | **PARTIAL** - CSPX visible, CS51 short active | OK |
+| **FX Hedge (M6E)** | Micro EUR/USD futures | **UNCLEAR** - no FX futures in positions | MEDIUM |
+
+### Actual vs Documented Allocation
+
+```
+DOCUMENTED:                    ACTUAL (Jan 5, 2026):
+├── Core Index RV:    20%     ├── Core Index RV:    ~12%
+├── Sector RV:        20%     ├── Legacy EU Short:  ~10%
+├── Europe Vol:       18%     ├── Europe Vol:        0%  ❌ NOT IMPLEMENTED
+├── Credit Carry:      8%     ├── Credit Carry:     ~10%
+├── Money Market:     34%     └── Cash/Uninvested:  ~68%
+└── Total:           100%
+```
+
+### What This Means
+
+1. **The PRIMARY insurance channel (Europe Vol Convex) is not operational.** Options in `instruments.yaml` are marked as placeholders with `tradeable: false`. This represents the biggest gap between documentation and reality.
+
+2. **Sector Pairs are falling back silently.** The SectorPairEngine exists but US ETFs (XLF, XLK) may be blocked for EU accounts or failing silently. Legacy ETFs are used instead.
+
+3. **The paper trading burn-in is validating the core execution logic**, not the full strategy. The 60-day burn-in will prove that:
+   - Order execution works reliably
+   - Position sizing is correct
+   - Risk scaling behaves as expected
+   - Gateway auto-recovery functions
+
+4. **The full strategy requires Phase R completion** (see ROADMAP.md) before production deployment.
+
+### Known Blockers
+
+| Blocker | Impact | Resolution |
+|---------|--------|------------|
+| Options `tradeable: false` | 18% of strategy non-functional | Implement options contract factory (Phase R.2) |
+| EUREX not in paper account | Can't trade VSTOXX/SX5E directly | Use US-listed proxies (SPY, VIX options) |
+| Sector pairs fallback | Factor exposure not neutralized | Debug SectorPairEngine (Phase R.3) |
 
 ---
 
@@ -225,6 +279,13 @@ Sleeve Weights (% of NAV at full scaling):
 - **Trend-Gated:** Position scales 0-100% based on US/EU relative momentum
 
 #### 2. Sector RV (20%) - Factor-Neutral Same-Sector Pairs
+
+> **STATUS: PARTIAL - FALLING BACK TO LEGACY ETFS**
+>
+> The SectorPairEngine exists but is currently falling back to legacy ETFs (EXS1, IUKD)
+> instead of trading factor-neutral pairs. US sector ETFs (XLF, XLK) may be blocked for
+> EU accounts or the engine is failing silently. See Phase R.3 in ROADMAP.md.
+
 Matched sector pairs to isolate regional beta from style bets:
 
 | Sector | US Long | EU Short | Beta Adjustment |
@@ -246,6 +307,13 @@ Matched sector pairs to isolate regional beta from style bets:
 **v2.2 Change:** Reduced from 15% to 8% and gated to NORMAL regime only. Ablation showed +0.023 marginal Sharpe but -0.55 insurance score - the sleeve hurts performance during the exact periods we need protection.
 
 #### 4. Europe Vol Convexity (18%) - PRIMARY Insurance
+
+> **STATUS: PLANNED - NOT YET IMPLEMENTED**
+>
+> Options in `instruments.yaml` are marked `tradeable: false`. The contract factory
+> to generate real IBKR option contracts has not been built yet. See Phase R.2 in
+> ROADMAP.md for implementation plan.
+
 Primary insurance channel using VSTOXX and SX5E structures:
 
 | Structure | Allocation | Description |
@@ -697,6 +765,12 @@ Example inverse-vol weights:
 **Integration:** Risk parity weights blended 70/30 with base strategy weights.
 
 ### Sovereign Crisis Overlay
+
+> **STATUS: ENABLED BUT STANDBY**
+>
+> The overlay is active in code but generating 0 orders because current stress levels
+> are below the activation threshold. This is expected behavior in normal markets.
+> Orders will generate when ETF drawdowns exceed 25% from 52-week highs.
 
 **Purpose:** Explicit protection for EU sovereign fragmentation scenarios.
 

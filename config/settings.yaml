@@ -567,14 +567,14 @@ vol_regime:
 # =============================================================================
 sector_pairs:
   enabled: true
-  # Sectors to include (must match instruments.yaml sector_pairs)
+  # Sectors to include (must match SECTOR_PAIRS in sector_pairs.py)
+  # NOTE: financials and industrials DISABLED - no UCITS equivalents available
+  # for US sector ETFs (XLF, XLI) from EU accounts due to PRIIPs/KID regulations
   included_sectors:
-    - financials
-    - technology
-    - industrials
-    - healthcare
-    # - energy       # Uncomment to add more sectors
-    # - utilities
+    - technology    # IUIT (US) vs EXV3 (EU) - UCITS available
+    - healthcare    # IUHC (US) vs EXV4 (EU) - UCITS available
+    # - financials  # DISABLED - no UCITS for XLF
+    # - industrials # DISABLED - no UCITS for XLI
 
   # Position sizing
   equal_weight_sectors: true     # Equal weight across sectors
