@@ -629,3 +629,77 @@ run_ledger:
   enabled: true
   db_path: "state/run_ledger.db"
   cleanup_days: 90                    # Keep 90 days of run history
+
+# ============================================================================
+# RISK PARITY ALLOCATOR (Phase 1)
+# Inverse-volatility weighting across strategy sleeves
+# ============================================================================
+risk_parity:
+  enabled: true
+  target_vol_annual: 0.12             # 12% annual portfolio volatility target
+  vol_floor: 0.06                     # Minimum vol assumption (6%)
+  vol_ceiling: 0.30                   # Maximum vol assumption (30%)
+
+  # Rebalancing
+  rebalance_frequency: "monthly"      # daily | weekly | monthly | quarterly
+  drift_threshold: 0.05               # 5% drift triggers rebalance
+
+  # Weight constraints
+  min_sleeve_weight: 0.05             # Minimum 5% per sleeve
+  max_sleeve_weight: 0.40             # Maximum 40% per sleeve
+
+  # Volatility estimation
+  vol_lookback_short: 20              # Short-term vol window (days)
+  vol_lookback_long: 60               # Long-term vol window (days)
+  ewma_span: 20                       # EWMA span for vol calculation
+
+# ============================================================================
+# SOVEREIGN CRISIS OVERLAY (Phase 2)
+# Put spreads on periphery sovereign exposure using US-listed proxies
+# ============================================================================
+sovereign_overlay:
+  enabled: true
+  annual_budget_pct: 0.0035           # 35bps annual budget (0.35% of NAV)
+  min_budget_pct: 0.0025              # 25bps minimum
+  max_budget_pct: 0.0050              # 50bps maximum
+
+  # Stress detection thresholds (based on ETF drawdown from high)
+  stress_threshold_elevated: 0.25     # 25% drawdown = ELEVATED
+  stress_threshold_high: 0.40         # 40% drawdown = HIGH
+  stress_threshold_crisis: 0.55       # 55% drawdown = CRISIS
+
+  # Position constraints
+  max_single_country_pct: 0.30        # Max 30% of budget per country
+  min_dte_roll: 21                    # Roll 21 days before expiry
+  target_dte: 60                      # Target 60-day expiry
+
+  # Put spread structure
+  use_spreads: true                   # Use put spreads vs naked puts
+  spread_width_pct: 0.05              # 5% spread width default
+
+  # Country allocations (sum to 1.0)
+  country_allocations:
+    italy: 0.35                       # EWI - highest periphery risk
+    france: 0.25                      # EWQ - moderate risk
+    eur_usd: 0.20                     # FXE - currency hedge
+    eu_banks: 0.20                    # EUFN - systemic risk
+
+# ============================================================================
+# STRATEGY INTEGRATION (Phase 3)
+# Merges risk parity weights with sovereign overlay positions
+# ============================================================================
+strategy_integration:
+  use_risk_parity: true               # Enable risk parity weight blending
+  risk_parity_weight: 0.7             # 70% risk parity, 30% base strategy
+  use_sovereign_overlay: true         # Enable sovereign overlay
+  sovereign_budget_pct: 0.0035        # Must match sovereign_overlay setting
+
+  # Portfolio constraints
+  max_single_country_pct: 0.15        # Max 15% per country in total portfolio
+  max_hedge_budget_pct: 0.05          # Max 5% NAV on hedges total
+  max_gross_leverage: 2.0             # Max 200% gross leverage
+
+  # Weight blending mode
+  # "weighted_average" = blend base + risk parity by weight
+  # "risk_parity_override" = use risk parity weights directly
+  blend_mode: "weighted_average"

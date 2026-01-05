@@ -36,6 +36,19 @@ from .utils.invariants import (
     InvariantError,
 )
 
+# ROADMAP Phase Q: Risk Parity + Sovereign Crisis Overlay
+try:
+    from .strategy_integration import (
+        IntegratedStrategy,
+        IntegratedStrategyConfig,
+        create_integrated_strategy,
+    )
+    from .risk_parity import RiskParityAllocator, RiskParityConfig
+    from .sovereign_overlay import SovereignCrisisOverlay, OverlayConfig
+    INTEGRATED_STRATEGY_AVAILABLE = True
+except ImportError:
+    INTEGRATED_STRATEGY_AVAILABLE = False
+
 # ROADMAP Phase A: Run Ledger for exactly-once execution
 try:
     from .state.run_ledger import (
@@ -239,6 +252,10 @@ class DailyScheduler:
         self.execution_engine: Optional[ExecutionEngine] = None
         self.alert_manager: Optional[Any] = None
 
+        # ROADMAP Phase Q: Integrated Strategy with Risk Parity + Sovereign Overlay
+        self.integrated_strategy: Optional[Any] = None  # IntegratedStrategy
+        self.use_integrated_strategy: bool = False
+
         # EXECUTION_STACK_UPGRADE: New execution components
         self.ibkr_transport: Optional[IBKRTransport] = None
         self.execution_policy: Optional[Any] = None  # ExecutionPolicy
@@ -350,6 +367,32 @@ class DailyScheduler:
                 risk_engine=self.risk_engine,
                 tail_hedge_manager=self.tail_hedge_manager
             )
+
+            # ROADMAP Phase Q: Initialize Integrated Strategy if available and enabled
+            if INTEGRATED_STRATEGY_AVAILABLE:
+                integration_config = self.settings.get('strategy_integration', {})
+                use_risk_parity = integration_config.get('use_risk_parity', False)
+                use_sovereign_overlay = integration_config.get('use_sovereign_overlay', False)
+
+                if use_risk_parity or use_sovereign_overlay:
+                    try:
+                        self.integrated_strategy = create_integrated_strategy(
+                            settings=self.settings,
+                            instruments_config=self.instruments,
+                            risk_engine=self.risk_engine,
+                            tail_hedge_manager=self.tail_hedge_manager
+                        )
+                        self.use_integrated_strategy = True
+                        self.logger.logger.info(
+                            "integrated_strategy_initialized",
+                            extra={
+                                "risk_parity_enabled": use_risk_parity,
+                                "sovereign_overlay_enabled": use_sovereign_overlay,
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.logger.warning(f"integrated_strategy_init_failed: {e}")
+                        self.use_integrated_strategy = False
 
             # Initialize execution engine (legacy)
             self.execution_engine = ExecutionEngine(
@@ -1177,7 +1220,52 @@ class DailyScheduler:
 
         ENGINE_FIX_PLAN Phase 4/5: Pass FX rates for currency-correct sizing
         and portfolio-level FX hedging.
+
+        ROADMAP Phase Q: Use IntegratedStrategy for risk parity + sovereign overlay
+        when enabled in settings.
         """
+        # ROADMAP Phase Q: Use IntegratedStrategy if available and enabled
+        if self.use_integrated_strategy and self.integrated_strategy:
+            try:
+                integrated_output = self.integrated_strategy.compute_strategy(
+                    portfolio=self.portfolio,
+                    data_feed=self.data_feed,
+                    risk_decision=risk_decision,
+                    fx_rates=self.fx_rates,
+                    today=date.today()
+                )
+
+                # Log integrated strategy output
+                self.logger.logger.info(
+                    "integrated_strategy_computed",
+                    extra={
+                        "risk_parity_scaling": integrated_output.risk_parity_weights.scaling_factor if integrated_output.risk_parity_weights else None,
+                        "sovereign_orders": len(integrated_output.sovereign_orders),
+                        "total_orders": len(integrated_output.all_orders),
+                        "constraints_applied": len(integrated_output.constraints_applied),
+                    }
+                )
+
+                # Return the base output - sovereign orders are already included in all_orders
+                # The integrated_output.base_output is a StrategyOutput with orders from base strategy
+                # We need to return something that run_daily() can use
+
+                # Create a modified StrategyOutput that includes sovereign overlay orders
+                from .strategy_logic import StrategyOutput
+                return StrategyOutput(
+                    sleeve_targets=integrated_output.base_output.sleeve_targets,
+                    total_target_positions=integrated_output.base_output.total_target_positions,
+                    orders=integrated_output.all_orders,  # Includes base + sovereign orders
+                    scaling_factor=integrated_output.base_output.scaling_factor,
+                    regime=integrated_output.base_output.regime,
+                    commentary=integrated_output.commentary
+                )
+
+            except Exception as e:
+                self.logger.logger.warning(f"integrated_strategy_compute_failed: {e}, falling back to base strategy")
+                # Fall through to base strategy
+
+        # Base strategy (fallback or when integrated not enabled)
         return self.strategy.compute_all_sleeve_targets(
             portfolio=self.portfolio,
             data_feed=self.data_feed,

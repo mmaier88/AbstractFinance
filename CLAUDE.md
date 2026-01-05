@@ -493,3 +493,98 @@ class DataQualityMetrics:
 4. **Issue 4** (batch fetch) - Performance improvement
 5. **Issue 5** (circuit breaker) - Resilience
 6. **Issue 6** (metrics) - Observability
+
+---
+
+## Risk Parity + Sovereign Crisis Overlay (Jan 5, 2026)
+
+### Overview
+
+Added three-phase strategy enhancement for improved risk management:
+
+1. **Phase 1: Risk Parity Allocator** - Inverse-vol weighting across sleeves
+2. **Phase 2: Sovereign Crisis Overlay** - Put spreads on periphery exposure
+3. **Phase 3: Integration** - Merges with existing strategy, applies constraints
+
+### Files Added
+
+| File | Description |
+|------|-------------|
+| `src/risk_parity.py` | Inverse-vol weight allocation with 12% vol target |
+| `src/sovereign_overlay.py` | Put spreads on EWI/EWQ/FXE/EUFN (US-listed proxies) |
+| `src/strategy_integration.py` | Combines risk parity + overlay with base strategy |
+
+### Configuration (settings.yaml)
+
+```yaml
+# Risk Parity settings
+risk_parity:
+  enabled: true
+  target_vol_annual: 0.12    # 12% portfolio vol target
+  rebalance_frequency: monthly
+  drift_threshold: 0.05      # 5% drift triggers rebalance
+
+# Sovereign Overlay settings
+sovereign_overlay:
+  enabled: true
+  annual_budget_pct: 0.0035  # 35bps budget
+  country_allocations:
+    italy: 0.35              # EWI
+    france: 0.25             # EWQ
+    eur_usd: 0.20            # FXE
+    eu_banks: 0.20           # EUFN
+
+# Integration settings
+strategy_integration:
+  use_risk_parity: true
+  risk_parity_weight: 0.7    # 70% RP, 30% base
+  use_sovereign_overlay: true
+  max_gross_leverage: 2.0
+```
+
+### IBKR Options Access (Paper Account)
+
+EUREX instruments NOT available. Using US-listed proxies:
+
+| Proxy | Symbol | Options | Expirations |
+|-------|--------|---------|-------------|
+| Italy | EWI | Available | 4 dates |
+| France | EWQ | Available | 4 dates |
+| EUR/USD | FXE | Available | 4 dates |
+| EU Banks | EUFN | Available | 4 dates |
+| Germany | EWG | Available | 9 dates |
+| SPY | SPY | Available | 32 dates |
+
+### Usage
+
+```python
+from src.strategy_integration import create_integrated_strategy
+
+# Create integrated strategy
+strategy = create_integrated_strategy(
+    settings=settings,
+    instruments_config=instruments,
+    risk_engine=risk_engine
+)
+
+# Compute strategy output
+output = strategy.compute_strategy(
+    portfolio=portfolio_state,
+    data_feed=data_feed,
+    risk_decision=risk_decision
+)
+
+# Access components
+print(output.risk_parity_weights.to_dict())
+print(output.sovereign_orders)
+print(output.all_orders)
+```
+
+### Key Features
+
+- **Inverse-Vol Weighting**: Lower-vol sleeves get higher allocation
+- **Vol Targeting**: Scales to achieve 12% annual portfolio vol
+- **Stress Detection**: Monitors ETF drawdowns as sovereign stress proxy
+- **Put Spreads**: Cost-efficient protection using put spreads
+- **Budget Control**: 35bps annual budget with monthly allocation
+- **Constraint Enforcement**: Max leverage, single-country limits

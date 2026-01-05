@@ -893,5 +893,109 @@ This testing framework follows institutional standards:
 
 ---
 
+---
+
+## Phase Q: Risk Parity + Sovereign Crisis Overlay (Status: COMPLETE) ✅
+
+**Date:** January 5, 2026
+
+**Goal:** Add inverse-volatility weighting and periphery sovereign protection.
+
+**Why:**
+1. Current sleeve weights are fixed. Risk parity dynamically allocates based on realized volatility.
+2. Missing explicit protection for EU sovereign stress (Italy, France fragmentation scenarios).
+
+### Q.1: Risk Parity Allocator ✅
+
+**File:** `src/risk_parity.py`
+
+**Features:**
+- Inverse-vol weighting across strategy sleeves
+- 12% annual portfolio volatility target
+- Monthly rebalancing with 5% drift threshold
+- Weight constraints (5% min, 40% max per sleeve)
+- EWMA + rolling volatility blending (20/60 day windows)
+
+**Configuration:**
+```yaml
+risk_parity:
+  enabled: true
+  target_vol_annual: 0.12
+  rebalance_frequency: monthly
+  drift_threshold: 0.05
+  min_sleeve_weight: 0.05
+  max_sleeve_weight: 0.40
+```
+
+### Q.2: Sovereign Crisis Overlay ✅
+
+**File:** `src/sovereign_overlay.py`
+
+**Features:**
+- Put spreads on periphery exposure using US-listed proxies
+- EUREX not available in IBKR paper account, using:
+  - **EWI** (iShares Italy ETF) - 35% allocation
+  - **EWQ** (iShares France ETF) - 25% allocation
+  - **FXE** (EUR/USD ETF) - 20% allocation
+  - **EUFN** (iShares Europe Financials) - 20% allocation
+- 35bps annual budget (25-50bps configurable)
+- Stress detection based on ETF drawdowns from 52-week highs
+- Tiered response: LOW → ELEVATED → HIGH → CRISIS
+
+**Configuration:**
+```yaml
+sovereign_overlay:
+  enabled: true
+  annual_budget_pct: 0.0035
+  use_spreads: true
+  spread_width_pct: 0.05
+  country_allocations:
+    italy: 0.35
+    france: 0.25
+    eur_usd: 0.20
+    eu_banks: 0.20
+```
+
+### Q.3: Strategy Integration ✅
+
+**File:** `src/strategy_integration.py`
+
+**Features:**
+- Blends risk parity weights (70%) with base strategy (30%)
+- Combines all orders from base strategy + sovereign overlay
+- Enforces portfolio-level constraints:
+  - Max 2.0x gross leverage
+  - Max 5% NAV on hedges total
+  - Max 15% per country exposure
+
+**Configuration:**
+```yaml
+strategy_integration:
+  use_risk_parity: true
+  risk_parity_weight: 0.7
+  use_sovereign_overlay: true
+  max_gross_leverage: 2.0
+  blend_mode: weighted_average
+```
+
+### Acceptance Criteria
+
+- [x] Risk parity computes inverse-vol weights for all sleeves
+- [x] Sovereign overlay generates put spread orders for periphery
+- [x] Integration layer merges weights and enforces constraints
+- [x] All modules import successfully
+- [x] Configuration added to settings.yaml
+- [x] Documentation updated
+
+### Files Created
+
+```
+src/risk_parity.py             # Inverse-vol allocation (450 lines)
+src/sovereign_overlay.py       # Periphery put spreads (550 lines)
+src/strategy_integration.py    # Integration layer (350 lines)
+```
+
+---
+
 *Document created: 2025-12-16*
-*Last updated: 2025-12-18*
+*Last updated: 2026-01-05*

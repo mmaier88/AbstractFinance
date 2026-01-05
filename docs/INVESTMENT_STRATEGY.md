@@ -661,10 +661,99 @@ AbstractFinance/
 | 1.2 | Dec 2025 | Execution Stack Upgrade (slippage, cost gating) |
 | 2.0 | Dec 2025 | Strategy Evolution (Europe-centric, trend filter, vol convexity) |
 | 2.1 | Dec 2025 | Full Implementation (term structure, vol-of-vol, sector pairs) |
-| **2.2** | Dec 2025 | **Portfolio Simplification** (removed single_name, merged crisis_alpha, NORMAL regime gate for credit) |
+| 2.2 | Dec 2025 | Portfolio Simplification (removed single_name, merged crisis_alpha, NORMAL regime gate for credit) |
+| **2.3** | Jan 2026 | **Risk Parity + Sovereign Crisis Overlay** (inverse-vol weighting, periphery put spreads) |
 
 ---
 
-*Document generated: December 2025*
+## Risk Parity + Sovereign Crisis Overlay (v2.3)
+
+### Overview
+
+Version 2.3 adds two new strategic components:
+
+1. **Risk Parity Allocator**: Dynamic inverse-volatility weighting across sleeves
+2. **Sovereign Crisis Overlay**: Put spreads on periphery exposure (Italy, France, EUR, EU Banks)
+
+### Risk Parity Allocator
+
+**Purpose:** Replace fixed sleeve weights with volatility-adaptive allocation.
+
+**How it works:**
+- Lower-vol sleeves get higher weight (inverse-volatility weighting)
+- Portfolio targets 12% annual volatility
+- Monthly rebalancing with 5% drift threshold
+- Weight constraints: 5% min, 40% max per sleeve
+
+```
+Example inverse-vol weights:
+├── Money Market (2% vol):    32% weight (low vol → high weight)
+├── Credit Carry (8% vol):    16% weight
+├── Core Index RV (12% vol):  14% weight
+├── Sector RV (15% vol):      11% weight
+└── Europe Vol (25% vol):      6% weight (high vol → low weight)
+```
+
+**Integration:** Risk parity weights blended 70/30 with base strategy weights.
+
+### Sovereign Crisis Overlay
+
+**Purpose:** Explicit protection for EU sovereign fragmentation scenarios.
+
+**Why it matters:** The existing europe_vol_convex sleeve hedges general EU stress. The sovereign overlay specifically targets:
+- Italy fragmentation (BTP-Bund spread blowout)
+- France political risk (OAT-Bund spread)
+- EUR/USD weakness during EU crisis
+- European banking stress
+
+**Instruments (US-listed proxies - EUREX not available in paper account):**
+
+| Proxy | Symbol | Allocation | Description |
+|-------|--------|------------|-------------|
+| Italy | EWI | 35% | iShares MSCI Italy ETF puts |
+| France | EWQ | 25% | iShares MSCI France ETF puts |
+| EUR/USD | FXE | 20% | CurrencyShares Euro Trust puts |
+| EU Banks | EUFN | 20% | iShares Europe Financials puts |
+
+**Structure:** Put spreads (buy 10% OTM, sell 15% OTM) to reduce premium decay.
+
+**Budget:** 35bps annual (0.35% of NAV), recyclable on monetization.
+
+**Stress Detection:** Based on ETF drawdowns from 52-week high:
+- 25% drawdown → ELEVATED (add protection)
+- 40% drawdown → HIGH (increase protection)
+- 55% drawdown → CRISIS (monetize winners)
+
+### Configuration (settings.yaml)
+
+```yaml
+# Risk Parity
+risk_parity:
+  enabled: true
+  target_vol_annual: 0.12
+  rebalance_frequency: monthly
+  drift_threshold: 0.05
+
+# Sovereign Overlay
+sovereign_overlay:
+  enabled: true
+  annual_budget_pct: 0.0035
+  use_spreads: true
+  country_allocations:
+    italy: 0.35
+    france: 0.25
+    eur_usd: 0.20
+    eu_banks: 0.20
+
+# Integration
+strategy_integration:
+  use_risk_parity: true
+  risk_parity_weight: 0.7
+  use_sovereign_overlay: true
+```
+
+---
+
+*Document generated: January 2026*
 *Strategy validated via backtest 2010-2025*
 *Paper trading on staging server: 94.130.228.55*
