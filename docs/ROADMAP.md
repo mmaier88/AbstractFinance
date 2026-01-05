@@ -986,13 +986,39 @@ strategy_integration:
 - [x] All modules import successfully
 - [x] Configuration added to settings.yaml
 - [x] Documentation updated
+- [x] Wired into scheduler for live execution
+- [x] Deployed to staging server
+- [x] Live verification passed
 
-### Files Created
+### Live Verification (Jan 5, 2026)
+
+Verified on staging server (94.130.228.55):
+
+```json
+{
+  "event": "integrated_strategy_initialized",
+  "risk_parity_enabled": true,
+  "sovereign_overlay_enabled": true
+}
+
+{
+  "event": "integrated_strategy_computed",
+  "risk_parity_scaling": 1.7,
+  "sovereign_orders": 0,
+  "total_orders": 2,
+  "constraints_applied": 1
+}
+```
+
+### Files Created/Modified
 
 ```
-src/risk_parity.py             # Inverse-vol allocation (450 lines)
-src/sovereign_overlay.py       # Periphery put spreads (550 lines)
-src/strategy_integration.py    # Integration layer (350 lines)
+src/risk_parity.py             # Inverse-vol allocation (627 lines) - NEW
+src/sovereign_overlay.py       # Periphery put spreads (756 lines) - NEW
+src/strategy_integration.py    # Integration layer (549 lines) - NEW
+src/scheduler.py               # Wired IntegratedStrategy (+88 lines) - MODIFIED
+src/__init__.py                # Module exports - MODIFIED
+config/settings.yaml           # Configuration sections - MODIFIED
 ```
 
 ---
