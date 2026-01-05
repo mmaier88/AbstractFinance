@@ -1217,6 +1217,7 @@ class IBKRTransport:
         bid = None
         ask = None
         close = None
+        from_ticker = False  # Track data source for GBX conversion
 
         # Try real-time market data first
         try:
@@ -1227,6 +1228,10 @@ class IBKRTransport:
             bid = ticker.bid if ticker.bid and ticker.bid > 0 else None
             ask = ticker.ask if ticker.ask and ticker.ask > 0 else None
             close = ticker.close if ticker.close and ticker.close > 0 else None
+
+            # Mark as ticker data if we got any prices
+            if last is not None or close is not None:
+                from_ticker = True
 
             self.ib_client.ib.cancelMktData(contract)
 
@@ -1244,9 +1249,12 @@ class IBKRTransport:
                 for item in self.ib_client.ib.portfolio():
                     if item.contract.symbol == target_symbol:
                         # Found matching position - use marketPrice as reference
+                        # NOTE: Portfolio prices are ALREADY in the display currency (GBP for UK ETFs)
+                        # so they should NOT be converted from pence
                         if item.marketPrice and item.marketPrice > 0:
                             last = item.marketPrice
                             close = item.marketPrice
+                            from_ticker = False  # Portfolio prices are already in GBP
                             self.logger.logger.debug(
                                 f"Using portfolio price for {instrument_id} ({target_symbol}): {last}"
                             )
@@ -1255,9 +1263,10 @@ class IBKRTransport:
                 self.logger.logger.debug(f"Portfolio price fallback failed for {instrument_id}: {e}")
 
         # Handle GBP pence conversion using centralized PriceConverter
-        # This replaces the old heuristic (price > 100) with proper symbol-based detection
+        # IMPORTANT: Only convert prices from real-time ticker data (which is in pence)
+        # Portfolio prices are already in the display currency (GBP) and should NOT be converted
         symbol = contract.symbol
-        if self._price_converter and self._price_converter.is_gbx_quoted(symbol):
+        if from_ticker and self._price_converter and self._price_converter.is_gbx_quoted(symbol):
             if last:
                 last = self._price_converter.from_broker(symbol, last)
             if bid:
