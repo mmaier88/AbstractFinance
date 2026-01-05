@@ -49,6 +49,13 @@ try:
 except ImportError:
     INTEGRATED_STRATEGY_AVAILABLE = False
 
+# ROADMAP Phase S (v2.4): Attribution Engine
+try:
+    from .attribution import AttributionEngine, create_attribution_engine
+    ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    ATTRIBUTION_AVAILABLE = False
+
 # ROADMAP Phase A: Run Ledger for exactly-once execution
 try:
     from .state.run_ledger import (
@@ -263,6 +270,11 @@ class DailyScheduler:
         self.integrated_strategy: Optional[Any] = None  # IntegratedStrategy
         self.use_integrated_strategy: bool = False
 
+        # ROADMAP Phase S (v2.4): Attribution Engine
+        self.attribution_engine: Optional[Any] = None  # AttributionEngine
+        self.previous_nav: Optional[float] = None  # For daily attribution
+        self._last_attribution_report: Optional[Any] = None  # AttributionReport
+
         # EXECUTION_STACK_UPGRADE: New execution components
         self.ibkr_transport: Optional[IBKRTransport] = None
         self.execution_policy: Optional[Any] = None  # ExecutionPolicy
@@ -407,6 +419,14 @@ class DailyScheduler:
                     except Exception as e:
                         self.logger.logger.warning(f"integrated_strategy_init_failed: {e}")
                         self.use_integrated_strategy = False
+
+            # ROADMAP Phase S (v2.4): Initialize Attribution Engine
+            if ATTRIBUTION_AVAILABLE:
+                try:
+                    self.attribution_engine = create_attribution_engine()
+                    self.logger.logger.info("attribution_engine_initialized")
+                except Exception as e:
+                    self.logger.logger.warning(f"attribution_engine_init_failed: {e}")
 
             # Initialize execution engine (legacy)
             self.execution_engine = ExecutionEngine(
@@ -1976,6 +1996,42 @@ class DailyScheduler:
                 self.returns_history, window=20
             )
 
+        # v2.4: Compute and store attribution
+        self._compute_attribution()
+
+    def _compute_attribution(self) -> None:
+        """v2.4: Compute daily attribution report."""
+        if not self.attribution_engine or not self.portfolio:
+            return
+
+        try:
+            # Use previous_nav if available, otherwise use current NAV (first day)
+            prev_nav = self.previous_nav or self.portfolio.nav
+
+            # Compute attribution
+            report = self.attribution_engine.compute_attribution(
+                portfolio=self.portfolio,
+                previous_nav=prev_nav,
+                today=date.today()
+            )
+
+            # Store for daily summary
+            self._last_attribution_report = report
+
+            # Log summary
+            self.logger.logger.info(
+                "attribution_computed",
+                daily_pnl_pct=f"{report.daily_pnl_pct:.2%}",
+                sleeves=len(report.sleeve_attribution),
+                equity_beta=f"{report.factor_exposure.equity_beta:.2f}"
+            )
+
+            # Update previous_nav for next day
+            self.previous_nav = self.portfolio.nav
+
+        except Exception as e:
+            self.logger.logger.warning(f"attribution_computation_failed: {e}")
+
     def _save_state(self) -> None:
         """Save portfolio state and history."""
         save_portfolio_state(
@@ -2014,6 +2070,20 @@ class DailyScheduler:
                         severity="info",
                         title="Execution Summary",
                         message=exec_summary
+                    )
+            except Exception:
+                pass
+
+        # v2.4: Send attribution summary
+        if hasattr(self, '_last_attribution_report') and self._last_attribution_report and self.alert_manager:
+            try:
+                attribution_summary = self._last_attribution_report.to_telegram_format()
+                if attribution_summary:
+                    self.alert_manager.send_alert(
+                        alert_type="daily",
+                        severity="info",
+                        title="Attribution Report",
+                        message=attribution_summary
                     )
             except Exception:
                 pass

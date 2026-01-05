@@ -26,6 +26,9 @@ from .sovereign_overlay import (
     SovereignCrisisOverlay, OverlayConfig, SOVEREIGN_PROXIES
 )
 from .tail_hedge import TailHedgeManager
+from .hedge_ladder import (
+    HedgeLadderEngine, HedgeLadderConfig, HedgeBucket
+)
 from .data_feeds import DataFeed
 from .fx_rates import FXRates, get_fx_rates
 
@@ -42,6 +45,10 @@ class IntegratedStrategyConfig:
     # Sovereign overlay settings
     use_sovereign_overlay: bool = True
     sovereign_budget_pct: float = 0.0035  # 35bps
+
+    # v2.4: Hedge ladder settings
+    use_hedge_ladder: bool = True
+    hedge_ladder_budget_pct: float = 0.004  # 40bps
 
     # Constraints
     max_single_country_pct: float = 0.15  # Max 15% per country
@@ -61,6 +68,8 @@ class IntegratedStrategyConfig:
             risk_parity_weight=int_settings.get('risk_parity_weight', 0.7),
             use_sovereign_overlay=int_settings.get('use_sovereign_overlay', True),
             sovereign_budget_pct=int_settings.get('sovereign_budget_pct', 0.0035),
+            use_hedge_ladder=int_settings.get('use_hedge_ladder', True),
+            hedge_ladder_budget_pct=int_settings.get('hedge_ladder_budget_pct', 0.004),
             max_single_country_pct=int_settings.get('max_single_country_pct', 0.15),
             max_hedge_budget_pct=int_settings.get('max_hedge_budget_pct', 0.05),
             max_gross_leverage=int_settings.get('max_gross_leverage', 2.0),
@@ -81,14 +90,17 @@ class IntegratedStrategyOutput:
     # Sovereign overlay orders
     sovereign_orders: List[OrderSpec]
 
+    # v2.4: Hedge ladder orders
+    hedge_ladder_orders: List[OrderSpec] = field(default_factory=list)
+
     # Combined orders
-    all_orders: List[OrderSpec]
+    all_orders: List[OrderSpec] = field(default_factory=list)
 
     # Constraints applied
-    constraints_applied: List[str]
+    constraints_applied: List[str] = field(default_factory=list)
 
     # Summary
-    commentary: str
+    commentary: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -100,6 +112,7 @@ class IntegratedStrategyOutput:
             "final_weights": {k.value: round(v, 4) for k, v in self.final_sleeve_weights.items()},
             "order_count": len(self.all_orders),
             "sovereign_order_count": len(self.sovereign_orders),
+            "hedge_ladder_order_count": len(self.hedge_ladder_orders),
             "constraints": self.constraints_applied,
             "timestamp": self.timestamp.isoformat(),
         }
@@ -161,6 +174,13 @@ class IntegratedStrategy:
             overlay_config = OverlayConfig.from_settings(settings)
             overlay_config.annual_budget_pct = self.config.sovereign_budget_pct
             self.sovereign_overlay = SovereignCrisisOverlay(overlay_config)
+
+        # v2.4: Hedge ladder
+        self.hedge_ladder: Optional[HedgeLadderEngine] = None
+        if self.config.use_hedge_ladder:
+            ladder_config = HedgeLadderConfig.from_settings(settings)
+            ladder_config.annual_budget_pct = self.config.hedge_ladder_budget_pct
+            self.hedge_ladder = HedgeLadderEngine(ladder_config, instruments_config)
 
         # Tail hedge manager (passed or created)
         self.tail_hedge_manager = tail_hedge_manager or TailHedgeManager(
@@ -253,9 +273,39 @@ class IntegratedStrategy:
             )
             logger.info(f"Sovereign overlay: {len(sovereign_orders)} orders generated")
 
+        # Step 5b (v2.4): Generate hedge ladder orders (if enabled)
+        hedge_ladder_orders = []
+        if self.hedge_ladder and self.config.use_hedge_ladder:
+            try:
+                # Get current VIX for roll decisions
+                vix_level = data_feed.get_last_price("vix_index") or 15.0
+
+                # Compute target positions for the ladder
+                ladder_positions = self.hedge_ladder.compute_ladder_positions(
+                    nav=portfolio.nav,
+                    underlying_price=data_feed.get_last_price("spy_etf") or 500.0,
+                    today=today
+                )
+
+                # Compute roll decisions based on existing positions and VIX
+                roll_orders = self.hedge_ladder.compute_roll_decisions(
+                    current_positions=portfolio.positions,
+                    current_vix=vix_level,
+                    today=today
+                )
+                hedge_ladder_orders.extend(roll_orders)
+
+                logger.info(
+                    f"Hedge ladder: {len(ladder_positions)} target legs, "
+                    f"{len(roll_orders)} roll orders, VIX={vix_level:.1f}"
+                )
+            except Exception as e:
+                logger.warning(f"Hedge ladder computation failed: {e}")
+
         # Step 6: Combine all orders
         all_orders = list(base_output.orders)
         all_orders.extend(sovereign_orders)
+        all_orders.extend(hedge_ladder_orders)
 
         # Step 7: Apply order-level constraints
         all_orders, order_constraints = self._apply_order_constraints(
@@ -266,7 +316,7 @@ class IntegratedStrategy:
         # Step 8: Build commentary
         commentary = self._build_commentary(
             base_output, rp_weights, final_weights, sovereign_orders,
-            constraints_applied, risk_decision
+            hedge_ladder_orders, constraints_applied, risk_decision
         )
 
         output = IntegratedStrategyOutput(
@@ -274,6 +324,7 @@ class IntegratedStrategy:
             risk_parity_weights=rp_weights,
             final_sleeve_weights=final_weights,
             sovereign_orders=sovereign_orders,
+            hedge_ladder_orders=hedge_ladder_orders,
             all_orders=all_orders,
             constraints_applied=constraints_applied,
             commentary=commentary
@@ -474,6 +525,7 @@ class IntegratedStrategy:
         rp_weights: Optional[RiskParityWeights],
         final_weights: Dict[Sleeve, float],
         sovereign_orders: List[OrderSpec],
+        hedge_ladder_orders: List[OrderSpec],
         constraints: List[str],
         risk_decision: RiskDecision
     ) -> str:
@@ -510,6 +562,14 @@ class IntegratedStrategy:
             for order in sovereign_orders[:5]:  # First 5
                 lines.append(f"  {order.side} {order.quantity} {order.instrument_id}")
 
+        if hedge_ladder_orders:
+            lines.extend([
+                "",
+                f"Hedge Ladder: {len(hedge_ladder_orders)} orders",
+            ])
+            for order in hedge_ladder_orders[:5]:  # First 5
+                lines.append(f"  {order.side} {order.quantity} {order.instrument_id}")
+
         if constraints:
             lines.extend([
                 "",
@@ -536,11 +596,14 @@ class IntegratedStrategy:
                 "risk_parity_weight": self.config.risk_parity_weight,
                 "use_sovereign_overlay": self.config.use_sovereign_overlay,
                 "sovereign_budget_pct": self.config.sovereign_budget_pct,
+                "use_hedge_ladder": self.config.use_hedge_ladder,
+                "hedge_ladder_budget_pct": self.config.hedge_ladder_budget_pct,
                 "max_gross_leverage": self.config.max_gross_leverage,
                 "blend_mode": self.config.blend_mode,
             },
             "risk_parity": self.risk_parity.get_summary() if self.risk_parity else None,
             "sovereign_overlay": self.sovereign_overlay.get_summary() if self.sovereign_overlay else None,
+            "hedge_ladder": self.hedge_ladder.get_summary() if self.hedge_ladder else None,
             "last_output": self._last_output.to_dict() if self._last_output else None,
         }
         return summary
