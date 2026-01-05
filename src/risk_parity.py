@@ -2,6 +2,8 @@
 Risk Parity Allocator for AbstractFinance.
 
 Phase 1: Inverse-volatility weighting across strategy sleeves.
+Phase 2 (v2.4): Regime-aware blending between base and safe-haven sleeves.
+
 Implements risk parity allocation with volatility targeting and
 dynamic rebalancing.
 
@@ -9,6 +11,7 @@ Key Features:
 - Inverse-vol weighting: Allocate more to lower-vol assets
 - Target vol budget: 12% annual portfolio volatility
 - Monthly recalibration with quarterly full rebalancing
+- Regime-aware blending: Shift to safe-haven sleeves in stress
 - Integration with existing sleeve architecture
 """
 
@@ -23,6 +26,48 @@ from enum import Enum
 from .portfolio import PortfolioState, Sleeve
 
 logger = logging.getLogger(__name__)
+
+
+class SleeveType(Enum):
+    """Sleeve classification for regime blending."""
+    BASE = "base"          # Risk-on sleeves (reduce in crisis)
+    SAFE_HAVEN = "safe"    # Defensive sleeves (increase in crisis)
+
+
+class Regime(Enum):
+    """Risk regime for allocation blending."""
+    NORMAL = "normal"
+    ELEVATED = "elevated"
+    CRISIS = "crisis"
+
+
+# Default sleeve type classifications
+DEFAULT_SLEEVE_CLASSIFICATION: Dict[Sleeve, SleeveType] = {
+    Sleeve.CORE_INDEX_RV: SleeveType.BASE,
+    Sleeve.SECTOR_RV: SleeveType.BASE,
+    Sleeve.CREDIT_CARRY: SleeveType.BASE,
+    Sleeve.EUROPE_VOL_CONVEX: SleeveType.SAFE_HAVEN,
+    Sleeve.MONEY_MARKET: SleeveType.SAFE_HAVEN,
+}
+
+
+# Default regime blend weights
+DEFAULT_REGIME_BLENDS: Dict[Regime, Dict[str, float]] = {
+    Regime.NORMAL: {"base": 0.85, "safe": 0.15},
+    Regime.ELEVATED: {"base": 0.65, "safe": 0.35},
+    Regime.CRISIS: {"base": 0.35, "safe": 0.65},
+}
+
+
+@dataclass
+class RegimeBlendState:
+    """Tracks regime blend state for smoothing."""
+    current_blend: Dict[str, float] = field(default_factory=lambda: {"base": 0.85, "safe": 0.15})
+    target_blend: Dict[str, float] = field(default_factory=lambda: {"base": 0.85, "safe": 0.15})
+    current_regime: Regime = Regime.NORMAL
+    smoothed_blend: Dict[str, float] = field(default_factory=lambda: {"base": 0.85, "safe": 0.15})
+    last_update: Optional[datetime] = None
+    ema_alpha: float = 0.5  # 3-day EMA: alpha = 2/(3+1) = 0.5
 
 
 class RebalanceFrequency(Enum):
@@ -104,6 +149,16 @@ class RiskParityConfig:
         Sleeve.MONEY_MARKET: 0.02,  # Money market ~2%
     })
 
+    # v2.4: Regime-aware blending
+    regime_blending_enabled: bool = True
+    regime_blends: Dict[Regime, Dict[str, float]] = field(
+        default_factory=lambda: DEFAULT_REGIME_BLENDS.copy()
+    )
+    sleeve_classification: Dict[Sleeve, SleeveType] = field(
+        default_factory=lambda: DEFAULT_SLEEVE_CLASSIFICATION.copy()
+    )
+    regime_ema_alpha: float = 0.5  # 3-day EMA for smooth transitions
+
     @classmethod
     def from_settings(cls, settings: Dict[str, Any]) -> "RiskParityConfig":
         """Create config from settings dict."""
@@ -116,6 +171,29 @@ class RiskParityConfig:
         except ValueError:
             frequency = RebalanceFrequency.MONTHLY
 
+        # Parse regime blends from settings
+        regime_blends = DEFAULT_REGIME_BLENDS.copy()
+        if 'regime_blending' in rp_settings:
+            rb = rp_settings['regime_blending']
+            if 'normal' in rb:
+                regime_blends[Regime.NORMAL] = rb['normal']
+            if 'elevated' in rb:
+                regime_blends[Regime.ELEVATED] = rb['elevated']
+            if 'crisis' in rb:
+                regime_blends[Regime.CRISIS] = rb['crisis']
+
+        # Parse sleeve classification from settings
+        sleeve_classification = DEFAULT_SLEEVE_CLASSIFICATION.copy()
+        if 'sleeve_classification' in rp_settings:
+            sc = rp_settings['sleeve_classification']
+            for sleeve_name, sleeve_type_str in sc.items():
+                try:
+                    sleeve = Sleeve(sleeve_name)
+                    sleeve_type = SleeveType(sleeve_type_str)
+                    sleeve_classification[sleeve] = sleeve_type
+                except (ValueError, KeyError):
+                    pass  # Skip invalid entries
+
         return cls(
             target_vol_annual=rp_settings.get('target_vol_annual', 0.12),
             vol_floor=rp_settings.get('vol_floor', 0.06),
@@ -127,6 +205,10 @@ class RiskParityConfig:
             vol_lookback_short=rp_settings.get('vol_lookback_short', 20),
             vol_lookback_long=rp_settings.get('vol_lookback_long', 60),
             ewma_span=rp_settings.get('ewma_span', 20),
+            regime_blending_enabled=rp_settings.get('regime_blending_enabled', True),
+            regime_blends=regime_blends,
+            sleeve_classification=sleeve_classification,
+            regime_ema_alpha=rp_settings.get('regime_ema_alpha', 0.5),
         )
 
 
@@ -143,6 +225,7 @@ class RiskParityAllocator:
     2. Total portfolio targets 12% annual vol
     3. Risk contribution roughly equal across sleeves
     4. Constraints prevent extreme allocations
+    5. v2.4: Regime-aware blending between base and safe-haven sleeves
     """
 
     def __init__(self, config: Optional[RiskParityConfig] = None):
@@ -163,6 +246,143 @@ class RiskParityAllocator:
         # Correlation matrix (updated periodically)
         self._correlation_matrix: Optional[pd.DataFrame] = None
         self._last_correlation_update: Optional[datetime] = None
+
+        # v2.4: Regime blend state for smoothing
+        self._regime_blend_state = RegimeBlendState()
+
+    def get_regime_blend_weights(
+        self,
+        regime: Regime,
+        apply_smoothing: bool = True
+    ) -> Dict[str, float]:
+        """
+        Get blend weights for base vs safe-haven sleeves given regime.
+
+        Uses EMA smoothing to prevent whipsaw on regime boundaries.
+
+        Args:
+            regime: Current market regime
+            apply_smoothing: Whether to apply EMA smoothing
+
+        Returns:
+            Dict with 'base' and 'safe' weights (sum to 1.0)
+        """
+        # Get target blend for this regime
+        target_blend = self.config.regime_blends.get(
+            regime,
+            {"base": 0.85, "safe": 0.15}
+        )
+
+        if not apply_smoothing:
+            return target_blend
+
+        # Apply EMA smoothing
+        state = self._regime_blend_state
+        alpha = self.config.regime_ema_alpha
+
+        smoothed = {}
+        for key in ["base", "safe"]:
+            current = state.smoothed_blend.get(key, 0.5)
+            target = target_blend.get(key, 0.5)
+            # EMA: new = alpha * target + (1 - alpha) * current
+            smoothed[key] = alpha * target + (1 - alpha) * current
+
+        # Normalize to ensure sum = 1.0
+        total = smoothed["base"] + smoothed["safe"]
+        if total > 0:
+            smoothed = {k: v / total for k, v in smoothed.items()}
+
+        # Update state
+        state.target_blend = target_blend
+        state.smoothed_blend = smoothed
+        state.current_regime = regime
+        state.last_update = datetime.now()
+
+        logger.debug(
+            f"Regime blend: regime={regime.value}, "
+            f"target={target_blend}, smoothed={smoothed}"
+        )
+
+        return smoothed
+
+    def compute_regime_aware_weights(
+        self,
+        inverse_vol_weights: Dict[Sleeve, float],
+        regime: Regime
+    ) -> Dict[Sleeve, float]:
+        """
+        Apply regime-aware blending to inverse-vol weights.
+
+        IMPORTANT: Risk parity (inverse-vol weighting) is applied only to
+        return-seeking (BASE) sleeves. Insurance (SAFE_HAVEN) sleeves are
+        intentionally exempt to preserve convex crisis behavior.
+
+        Insurance sleeves get FIXED weights within their budget, not vol-adjusted.
+
+        Args:
+            inverse_vol_weights: Raw inverse-vol weights for all sleeves
+            regime: Current market regime
+
+        Returns:
+            Regime-adjusted weights (sum to 1.0)
+        """
+        if not self.config.regime_blending_enabled:
+            return inverse_vol_weights
+
+        # Get regime blend (with smoothing)
+        regime_blend = self.get_regime_blend_weights(regime)
+
+        # Separate sleeves by type
+        base_sleeves = {}
+        safe_sleeves = []
+
+        for sleeve, weight in inverse_vol_weights.items():
+            sleeve_type = self.config.sleeve_classification.get(
+                sleeve, SleeveType.BASE
+            )
+            if sleeve_type == SleeveType.BASE:
+                base_sleeves[sleeve] = weight
+            else:
+                safe_sleeves.append(sleeve)
+
+        # Apply inverse-vol ONLY to base (return-seeking) sleeves
+        base_total = sum(base_sleeves.values()) or 1.0
+        base_normalized = {s: w / base_total for s, w in base_sleeves.items()}
+
+        # FIXED weights for safe-haven sleeves - NO inverse-vol applied
+        # This preserves convex crisis behavior of insurance sleeves
+        safe_fixed_weights = {
+            Sleeve.EUROPE_VOL_CONVEX: 0.60,  # 60% of safe budget to vol hedge
+            Sleeve.MONEY_MARKET: 0.40,        # 40% of safe budget to cash
+        }
+
+        # Apply regime blend to buckets
+        base_budget = regime_blend["base"]
+        safe_budget = regime_blend["safe"]
+
+        # Combine into final weights
+        final_weights = {}
+
+        # Base sleeves get inverse-vol weights within their budget
+        for sleeve, norm_weight in base_normalized.items():
+            final_weights[sleeve] = norm_weight * base_budget
+
+        # Safe sleeves get FIXED weights within their budget (no risk parity)
+        for sleeve in safe_sleeves:
+            fixed_weight = safe_fixed_weights.get(sleeve, 1.0 / len(safe_sleeves))
+            final_weights[sleeve] = fixed_weight * safe_budget
+
+        logger.info(
+            f"Regime-aware weights computed: regime={regime.value}, "
+            f"base_budget={base_budget:.1%} (risk parity applied), "
+            f"safe_budget={safe_budget:.1%} (fixed weights, no risk parity)"
+        )
+
+        return final_weights
+
+    def get_sleeve_type(self, sleeve: Sleeve) -> SleeveType:
+        """Get the type classification for a sleeve."""
+        return self.config.sleeve_classification.get(sleeve, SleeveType.BASE)
 
     def update_sleeve_returns(
         self,
@@ -505,7 +725,8 @@ class RiskParityAllocator:
         self,
         portfolio_state: Optional[PortfolioState] = None,
         today: Optional[date] = None,
-        force_rebalance: bool = False
+        force_rebalance: bool = False,
+        regime: Optional[Regime] = None
     ) -> RiskParityWeights:
         """
         Compute risk parity weights for all sleeves.
@@ -516,11 +737,13 @@ class RiskParityAllocator:
             portfolio_state: Current portfolio state (for current weights)
             today: Current date
             force_rebalance: Force recalculation even if not needed
+            regime: Current market regime (v2.4) for regime-aware blending
 
         Returns:
             RiskParityWeights with allocations and metadata
         """
         today = today or date.today()
+        regime = regime or Regime.NORMAL
 
         # Get current weights from portfolio state
         current_weights = {}
@@ -547,8 +770,14 @@ class RiskParityAllocator:
         # Compute inverse-vol weights
         raw_weights = self.compute_inverse_vol_weights(sleeve_vols)
 
+        # v2.4: Apply regime-aware blending
+        if self.config.regime_blending_enabled:
+            regime_adjusted_weights = self.compute_regime_aware_weights(raw_weights, regime)
+        else:
+            regime_adjusted_weights = raw_weights
+
         # Apply constraints
-        constrained_weights = self.apply_weight_constraints(raw_weights)
+        constrained_weights = self.apply_weight_constraints(regime_adjusted_weights)
 
         # Check if rebalance needed
         should_rebal, reason = self.should_rebalance(
@@ -556,6 +785,11 @@ class RiskParityAllocator:
             constrained_weights,
             today
         )
+
+        # v2.4: Also rebalance if regime changed significantly
+        if not should_rebal and self._regime_blend_state.current_regime != regime:
+            should_rebal = True
+            reason = f"Regime change: {self._regime_blend_state.current_regime.value} -> {regime.value}"
 
         if not should_rebal and not force_rebalance and self._current_weights:
             # Return existing weights
@@ -587,8 +821,8 @@ class RiskParityAllocator:
         self._last_rebalance = datetime.now()
 
         logger.info(
-            f"Risk parity weights computed: expected_vol={expected_vol:.2%}, "
-            f"scaling={scaling:.2f}, reason={reason}"
+            f"Risk parity weights computed: regime={regime.value}, "
+            f"expected_vol={expected_vol:.2%}, scaling={scaling:.2f}, reason={reason}"
         )
 
         return RiskParityWeights(
@@ -623,5 +857,23 @@ class RiskParityAllocator:
                 "drift_threshold": self.config.drift_threshold,
                 "min_weight": self.config.min_sleeve_weight,
                 "max_weight": self.config.max_sleeve_weight,
-            }
+                "regime_blending_enabled": self.config.regime_blending_enabled,
+            },
+            # v2.4: Regime blend state
+            "regime_blend": {
+                "current_regime": self._regime_blend_state.current_regime.value,
+                "smoothed_blend": {
+                    k: round(v, 3) for k, v in self._regime_blend_state.smoothed_blend.items()
+                },
+                "target_blend": {
+                    k: round(v, 3) for k, v in self._regime_blend_state.target_blend.items()
+                },
+                "last_update": (
+                    self._regime_blend_state.last_update.isoformat()
+                    if self._regime_blend_state.last_update else None
+                ),
+            },
+            "sleeve_classification": {
+                k.value: v.value for k, v in self.config.sleeve_classification.items()
+            },
         }

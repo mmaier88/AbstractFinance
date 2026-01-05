@@ -764,6 +764,15 @@ Example inverse-vol weights:
 
 **Integration:** Risk parity weights blended 70/30 with base strategy weights.
 
+> **CRITICAL DESIGN PRINCIPLE:**
+>
+> Risk parity (inverse-vol weighting) is applied only to return-seeking sleeves (Core Index RV, Sector RV, Credit Carry). Insurance sleeves (Europe Vol, Money Market) are intentionally exempt to preserve convex crisis behavior.
+>
+> If insurance sleeves were vol-weighted, they would get reduced allocation in calm markets (when they look expensive due to low vol) and increased allocation after a crisis (when vol is high). This is backwards - we want consistent insurance coverage BEFORE a crisis, not after.
+>
+> **Return-seeking sleeves:** Inverse-vol weighted within their regime budget
+> **Insurance sleeves:** Fixed 60/40 split (Vol Hedge 60%, Cash 40%) within their regime budget
+
 ### Sovereign Crisis Overlay
 
 > **STATUS: ENABLED BUT STANDBY**

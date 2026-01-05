@@ -718,3 +718,147 @@ print(output.all_orders)
 - **Put Spreads**: Cost-efficient protection using put spreads
 - **Budget Control**: 35bps annual budget with monthly allocation
 - **Constraint Enforcement**: Max leverage, single-country limits
+
+---
+
+## v2.4 Strategy Improvements (Phase S) - Jan 5, 2026
+
+### Overview
+
+Comprehensive strategy enhancement with regime-aware allocation, improved hedge structure, and better reporting.
+
+### Critical Design Principle
+
+> **Risk parity (inverse-vol weighting) is applied only to return-seeking sleeves (Core Index RV, Sector RV, Credit Carry). Insurance sleeves (Europe Vol, Money Market) are intentionally exempt to preserve convex crisis behavior.**
+
+This is fundamental: insurance sleeves must maintain their hedge effectiveness regardless of their volatility profile.
+
+### S.1: Regime-Aware Risk Parity
+
+**File:** `src/risk_parity.py`
+
+Dynamic allocation between BASE (return-seeking) and SAFE_HAVEN (insurance) sleeves:
+
+| Regime | BASE Weight | SAFE_HAVEN Weight | Trigger |
+|--------|-------------|-------------------|---------|
+| NORMAL | 85% | 15% | VIX < 20 |
+| ELEVATED | 65% | 35% | VIX 20-30 |
+| CRISIS | 35% | 65% | VIX > 30 |
+
+Key additions:
+- `SleeveType` enum: BASE vs SAFE_HAVEN classification
+- `Regime` enum: NORMAL, ELEVATED, CRISIS
+- `RegimeBlendState`: EMA smoothing (α=0.15) for smooth transitions
+- Insurance sleeves use FIXED weights (60/40) instead of inverse-vol
+
+```python
+# Sleeve classification
+SleeveType.BASE = [CORE_INDEX_RV, SECTOR_RV, CREDIT_CARRY]
+SleeveType.SAFE_HAVEN = [EUROPE_VOL_CONVEX, MONEY_MARKET]
+```
+
+### S.2: Hedge Ladder + Two Sub-Buckets
+
+**File:** `src/hedge_ladder.py`
+
+6-leg put spread structure across two buckets:
+
+| Bucket | Allocation | Purpose | Legs |
+|--------|------------|---------|------|
+| CRASH_CONVEXITY | 40% | Deep OTM puts for tail events | 30/60/90 DTE |
+| CRISIS_MONETIZERS | 60% | Closer-to-money puts for faster payoff | 30/60/90 DTE |
+
+Features:
+- VIX spike detection for roll timing
+- Staggered expiries reduce gamma exposure
+- 40bps annual budget with monthly allocation
+- Automatic roll at 50% time decay or VIX spike >5pts
+
+```yaml
+# config/settings.yaml
+hedge_ladder:
+  annual_budget_pct: 0.004  # 40bps
+  crash_convexity:
+    allocation_pct: 0.40
+    strike_pct_otm: 0.15    # 15% OTM
+  crisis_monetizers:
+    allocation_pct: 0.60
+    strike_pct_otm: 0.08    # 8% OTM
+```
+
+### S.3: Sovereign Rates Fragmentation Overlay
+
+**File:** `src/sovereign_overlay.py`
+
+Simplified to focus on Bund-BTP spread as primary signal:
+
+| Metric | Trigger | Action |
+|--------|---------|--------|
+| Bund-BTP spread | >200bps | Activate periphery puts |
+| 10-day change | >50bps | Increase allocation |
+
+```yaml
+sovereign_overlay:
+  mode: rates_fragmentation  # New mode (vs legacy)
+  rates_config:
+    bund_symbol: FGBL
+    btp_symbol: FBTP
+    spread_trigger_bps: 200
+```
+
+### S.4: Defensive Credit Sleeve (0-5%)
+
+**File:** `config/settings.yaml`
+
+Credit sleeve reduced and regime-gated:
+
+| Regime | Max Allocation | Allowed Instruments |
+|--------|----------------|---------------------|
+| NORMAL | 5% | LQDE (IG), FLOT (floating) |
+| ELEVATED | 2% | FLOT only |
+| CRISIS | 0% | None |
+
+```yaml
+credit_sleeve:
+  max_allocation_pct: 0.05
+  regime_caps:
+    normal: 0.05
+    elevated: 0.02
+    crisis: 0.0
+  allowed_instruments:
+    - LQDE  # IG corporate
+    - FLOT  # Floating rate
+```
+
+### S.5: Attribution & Reporting
+
+**File:** `src/attribution.py`
+
+Daily sleeve-level P&L attribution and factor exposure:
+
+| Component | Description |
+|-----------|-------------|
+| SleeveAttribution | P&L, gross/net exposure per sleeve |
+| FactorExposure | Equity beta, duration, credit spread, FX |
+| HedgeEffectiveness | Vol hedge offset ratio vs core drawdown |
+| AttributionReport | Telegram-formatted daily summary |
+
+```python
+from src.attribution import create_attribution_engine
+
+engine = create_attribution_engine()
+report = engine.compute_attribution(portfolio, previous_nav)
+print(report.to_telegram_format())
+```
+
+### Files Added/Modified
+
+| File | Change |
+|------|--------|
+| `src/risk_parity.py` | Added regime-aware blending, sleeve types |
+| `src/hedge_ladder.py` | NEW - 6-leg hedge structure |
+| `src/sovereign_overlay.py` | Added rates fragmentation mode |
+| `src/attribution.py` | NEW - Daily attribution engine |
+| `config/settings.yaml` | Added hedge_ladder, credit_sleeve configs |
+| `docs/INVESTMENT_STRATEGY.md` | Added design principle note |
+| `docs/ROADMAP.md` | Added Phase S specification |

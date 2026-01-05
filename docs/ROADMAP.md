@@ -1349,6 +1349,364 @@ All phases complete when:
 ---
 
 *Phase R added: 2026-01-05*
+*Status: COMPLETE*
+
+---
+
+---
+
+## Phase S: Strategy v2.4 - Regime-Aware Risk Parity & Hedge Ladder (Status: IN PROGRESS)
+
+**Date:** January 5, 2026
+
+**Goal:** Upgrade risk parity to be regime-aware, implement sophisticated hedge laddering, simplify sovereign overlay to rates fragmentation, and add proper attribution reporting.
+
+**Philosophy:** The strategy needs to dynamically adapt its risk budget allocation based on regime, while maintaining persistent hedging with intelligent roll management.
+
+---
+
+### S.1: Regime-Aware Risk Parity Allocator (Priority: CRITICAL)
+
+**Goal:** Modify risk parity to blend between base strategy weights and safe-haven weights based on regime.
+
+**Current State:** Risk parity computes inverse-vol weights but doesn't adjust for regime changes.
+
+**New Behavior:**
+
+| Regime | Base Weight | Safe Weight | Blend |
+|--------|-------------|-------------|-------|
+| NORMAL | 85% | 15% | Standard risk-on |
+| ELEVATED | 65% | 35% | Defensive tilt |
+| CRISIS | 35% | 65% | Maximum protection |
+
+**Sleeve Classification:**
+
+| Sleeve | Type | Normal Weight | Safe-Haven Weight |
+|--------|------|---------------|-------------------|
+| Core Index RV | Base | 25% | 5% |
+| Sector Pairs | Base | 20% | 5% |
+| Europe Vol | Safe | 15% | 30% |
+| Credit Carry | Base | 10% | 0% |
+| Money Market | Safe | 30% | 60% |
+
+**Deliverables:**
+
+1. **Update `src/risk_parity.py`:**
+   - Add `SleeveType` enum (BASE, SAFE_HAVEN)
+   - Add `get_regime_blend_weights()` method
+   - Modify `compute_weights()` to accept regime parameter
+   - Blend inverse-vol within each sleeve type, then blend types by regime
+
+2. **Configuration updates:**
+   ```yaml
+   risk_parity:
+     regime_blending:
+       normal: { base: 0.85, safe: 0.15 }
+       elevated: { base: 0.65, safe: 0.35 }
+       crisis: { base: 0.35, safe: 0.65 }
+     sleeve_classification:
+       core_index_rv: base
+       sector_pairs: base
+       europe_vol: safe
+       credit_carry: base
+       money_market: safe
+   ```
+
+3. **Transition smoothing:**
+   - 3-day EMA for regime blend transitions
+   - Prevent whipsaw on regime boundaries
+
+**Acceptance Criteria:**
+- [ ] Regime blend weights computed correctly for each regime
+- [ ] Sleeve classification maps correctly
+- [ ] Transition smoothing prevents daily flipping
+- [ ] Unit tests cover all regime transitions
+
+**Effort:** 2 days
+
+---
+
+### S.2: Hedge Ladder + Two Sub-Buckets (Priority: HIGH)
+
+**Goal:** Implement sophisticated hedge program with 3-expiry ladder and two-bucket structure.
+
+**Current State:** Simple single-expiry hedges in europe_vol.py
+
+**New Structure:**
+
+```
+Hedge Budget (35-50bps annual)
+├── Crash Convexity Bucket (40%)
+│   ├── 30-DTE leg (33%)
+│   ├── 60-DTE leg (33%)
+│   └── 90-DTE leg (34%)
+└── Crisis Monetizers Bucket (60%)
+    ├── 30-DTE leg (33%)
+    ├── 60-DTE leg (33%)
+    └── 90-DTE leg (34%)
+```
+
+**Bucket Definitions:**
+
+| Bucket | Purpose | Instruments | Target Greeks |
+|--------|---------|-------------|---------------|
+| Crash Convexity | Instant payoff in crash | Deep OTM puts (15-20% OTM) | High gamma, low theta |
+| Crisis Monetizers | Steady payoff in extended crisis | Near-money puts (5-10% OTM) | Moderate gamma, higher delta |
+
+**Roll Logic:**
+- Roll at 21 DTE (or 7 DTE in low-vol)
+- Roll to target DTE (30/60/90 based on leg)
+- Skip roll if VIX spike >15% (wait for normalization)
+
+**Deliverables:**
+
+1. **Create `src/hedge_ladder.py`:**
+   - `HedgeBucket` enum (CRASH_CONVEXITY, CRISIS_MONETIZER)
+   - `HedgeLeg` dataclass (bucket, target_dte, current_dte, strike_pct_otm)
+   - `HedgeLadderEngine` class with:
+     - `compute_ladder_positions()` - target positions for all 6 legs
+     - `compute_roll_orders()` - orders needed to maintain ladder
+     - `compute_budget_allocation()` - per-leg budget from annual budget
+
+2. **Update `src/tail_hedge.py`:**
+   - Integrate HedgeLadderEngine
+   - Replace simple hedge logic with ladder-aware logic
+
+3. **Configuration:**
+   ```yaml
+   hedge_ladder:
+     enabled: true
+     annual_budget_pct: 0.0040  # 40bps
+     buckets:
+       crash_convexity:
+         allocation: 0.40
+         strike_pct_otm: 0.18  # 18% OTM
+       crisis_monetizers:
+         allocation: 0.60
+         strike_pct_otm: 0.08  # 8% OTM
+     ladder:
+       legs: [30, 60, 90]  # Target DTEs
+       roll_trigger_dte: 21
+       low_vol_roll_dte: 7
+       skip_roll_vix_spike_pct: 0.15
+   ```
+
+**Acceptance Criteria:**
+- [ ] 6 hedge legs computed (2 buckets × 3 DTEs)
+- [ ] Roll orders generated at correct DTE
+- [ ] Budget properly allocated across legs
+- [ ] VIX spike detection prevents bad rolls
+- [ ] Unit tests cover roll logic edge cases
+
+**Effort:** 3 days
+
+---
+
+### S.3: Sovereign Rates Fragmentation Overlay (Priority: MEDIUM)
+
+**Goal:** Simplify sovereign overlay to focus on rates fragmentation (Bund-BTP spread).
+
+**Current State:** Complex stress detection based on ETF drawdowns.
+
+**New Approach:**
+- Primary signal: Bund-BTP spread (FGBL vs FBTP futures)
+- Secondary confirmation: EUR/USD weakness
+- Activation: Spread widening >50bps from 20-day MA
+
+**Deliverables:**
+
+1. **Update `src/sovereign_overlay.py`:**
+   - Add `get_bund_btp_spread()` method
+   - Replace ETF drawdown logic with spread monitoring
+   - Simplify to single instrument: short BTP exposure via FBTP
+
+2. **Add EUREX bond futures data:**
+   - FGBL (Euro-Bund) contract
+   - FBTP (BTP) contract
+   - Spread calculation with DV01 matching
+
+3. **Configuration:**
+   ```yaml
+   sovereign_overlay:
+     mode: rates_fragmentation  # NEW: rates_fragmentation or legacy
+     rates_config:
+       bund_symbol: FGBL
+       btp_symbol: FBTP
+       spread_trigger_bps: 50
+       spread_ma_days: 20
+       position_sizing: dv01_matched
+   ```
+
+**Fallback:** If EUREX futures unavailable in paper account, use EWI/EWG ETF ratio as proxy.
+
+**Acceptance Criteria:**
+- [ ] Bund-BTP spread calculated from futures or ETF proxy
+- [ ] Activation triggers at spread widening threshold
+- [ ] Position sized correctly with DV01 matching
+- [ ] Fallback to ETF proxy documented and working
+
+**Effort:** 2 days
+
+---
+
+### S.4: Defensive Credit Sleeve (0-5%) (Priority: MEDIUM)
+
+**Goal:** Reduce credit sleeve to 0-5% range, regime-gated, IG/floating only.
+
+**Current State:** 8% credit allocation with HY exposure.
+
+**New Rules:**
+- **Normal regime:** 5% allocation (IG + floating rate only)
+- **Elevated regime:** 2% allocation (floating rate only)
+- **Crisis regime:** 0% allocation (full cash)
+
+**Allowed Instruments:**
+| Instrument | Symbol | Type | Regime Allowed |
+|------------|--------|------|----------------|
+| iShares IG Corp | LQDE | Investment Grade | NORMAL, ELEVATED |
+| iShares Floating Rate | FLOT | Floating Rate | NORMAL, ELEVATED |
+| No HY allowed | - | - | - |
+
+**Removed Instruments:**
+- IHYU (High Yield) - too correlated with equity drawdowns
+- ARCC (BDC) - credit risk too high for insurance portfolio
+
+**Deliverables:**
+
+1. **Update `config/instruments.yaml`:**
+   - Remove IHYU from credit sleeve
+   - Remove ARCC from credit sleeve
+   - Mark as "removed_v2.4" for audit trail
+
+2. **Update `src/strategy_logic.py`:**
+   - Add regime gate to credit sleeve
+   - Max 5% in NORMAL, 2% in ELEVATED, 0% in CRISIS
+   - Only LQDE + FLOT allowed
+
+3. **Configuration:**
+   ```yaml
+   credit_sleeve:
+     enabled: true
+     regime_caps:
+       normal: 0.05
+       elevated: 0.02
+       crisis: 0.00
+     allowed_instruments:
+       - lqde  # IG only
+       - flot  # Floating only
+     # Removed in v2.4:
+     # - ihyu  # HY removed - too correlated
+     # - arcc  # BDC removed - too risky
+   ```
+
+**Acceptance Criteria:**
+- [ ] Credit exposure caps correctly by regime
+- [ ] Only IG/floating instruments traded
+- [ ] Existing IHYU/ARCC positions unwound gracefully
+- [ ] Documentation updated with rationale
+
+**Effort:** 1 day
+
+---
+
+### S.5: Reporting/Attribution Upgrades (Priority: LOW)
+
+**Goal:** Add daily sleeve-level P&L attribution and factor exposure reporting.
+
+**Current State:** Basic portfolio P&L, no sleeve attribution.
+
+**Deliverables:**
+
+1. **Create `src/attribution.py`:**
+   - `compute_sleeve_pnl()` - P&L by sleeve
+   - `compute_factor_exposure()` - Beta, duration, credit, FX
+   - `compute_hedge_effectiveness()` - Hedge P&L vs core drawdown
+
+2. **Update daily Telegram summary:**
+   ```
+   📊 Daily Attribution (2026-01-05)
+
+   NAV: $278,108 (+$1,234 / +0.45%)
+
+   Sleeve P&L:
+   ├── Core Index RV:  +$890 (+0.32%)
+   ├── Sector Pairs:   +$234 (+0.08%)
+   ├── Europe Vol:     -$123 (-0.04%)
+   ├── Credit:         +$67 (+0.02%)
+   └── Money Market:   +$166 (+0.06%)
+
+   Factor Exposure:
+   ├── Equity Beta:    0.45
+   ├── Duration:       2.1 years
+   ├── Credit Spread:  0.15
+   └── EUR/USD:        -$12,500 (-4.5% NAV)
+
+   Hedge Effectiveness:
+   └── Vol hedge offset: +$0 (no stress)
+   ```
+
+3. **Add Grafana panels:**
+   - Sleeve P&L time series
+   - Factor exposure heatmap
+   - Hedge effectiveness over time
+
+**Acceptance Criteria:**
+- [ ] Daily attribution computed for all sleeves
+- [ ] Telegram shows sleeve-level P&L
+- [ ] Factor exposures calculated correctly
+- [ ] Grafana panels display attribution
+
+**Effort:** 2 days
+
+---
+
+### Execution Order
+
+| Order | Phase | Priority | Dependency | Effort |
+|-------|-------|----------|------------|--------|
+| 1 | **S.1: Regime-Aware RP** | CRITICAL | None | 2 days |
+| 2 | **S.2: Hedge Ladder** | HIGH | None (parallel) | 3 days |
+| 3 | **S.3: Rates Overlay** | MEDIUM | None (parallel) | 2 days |
+| 4 | **S.4: Defensive Credit** | MEDIUM | S.1 (needs regime) | 1 day |
+| 5 | **S.5: Attribution** | LOW | S.1-S.4 complete | 2 days |
+
+**Recommended Timeline:**
+- Day 1-2: S.1 (Regime-Aware RP)
+- Day 2-4: S.2 (Hedge Ladder) - parallel start
+- Day 3-4: S.3 (Rates Overlay) - parallel
+- Day 5: S.4 (Defensive Credit)
+- Day 6-7: S.5 (Attribution)
+- Day 8: Integration testing + staging deploy
+
+---
+
+### Definition of Done (Phase S)
+
+All phases complete when:
+
+- [ ] Risk parity dynamically adjusts weights by regime
+- [ ] Hedge ladder maintains 6 legs across 2 buckets
+- [ ] Sovereign overlay triggers on rates fragmentation
+- [ ] Credit sleeve capped at 0-5% with regime gating
+- [ ] Daily attribution shows sleeve-level P&L
+- [ ] All changes deployed to staging
+- [ ] 1 week paper trading validation
+
+---
+
+### Risk Considerations
+
+| Risk | Mitigation |
+|------|------------|
+| Regime transitions too frequent | 3-day EMA smoothing on blend weights |
+| Hedge ladder complexity | Start with 30/60 only, add 90 DTE later |
+| EUREX futures unavailable | ETF proxies (EWI/EWG) as fallback |
+| Credit unwind causes slippage | Gradual unwind over 5 trading days |
+| Attribution calculation errors | Cross-check with broker P&L daily |
+
+---
+
+*Phase S added: 2026-01-05*
 *Status: IN PROGRESS*
 
 ---

@@ -177,9 +177,33 @@ class OverlayBudget:
         return self.total_budget / 12
 
 
+class OverlayMode(Enum):
+    """Sovereign overlay detection mode."""
+    LEGACY = "legacy"                    # ETF drawdown-based (original)
+    RATES_FRAGMENTATION = "rates_fragmentation"  # v2.4: Bund-BTP spread-based
+
+
+@dataclass
+class RatesFragmentationConfig:
+    """v2.4: Configuration for rates fragmentation mode."""
+    bund_symbol: str = "FGBL"           # Euro-Bund futures
+    btp_symbol: str = "FBTP"            # BTP futures
+    spread_trigger_bps: float = 50.0    # Trigger at 50bps widening from MA
+    spread_ma_days: int = 20            # 20-day moving average
+    position_sizing: str = "dv01_matched"  # DV01 matching for spread trade
+
+    # ETF fallback if futures unavailable
+    use_etf_fallback: bool = True
+    etf_fallback_bund: str = "EWG"      # Germany ETF proxy
+    etf_fallback_btp: str = "EWI"       # Italy ETF proxy
+
+
 @dataclass
 class OverlayConfig:
     """Configuration for sovereign overlay."""
+    # v2.4: Mode selection
+    mode: OverlayMode = OverlayMode.LEGACY  # legacy or rates_fragmentation
+
     # Budget settings
     annual_budget_pct: float = 0.0035  # 35bps default (middle of 25-50)
     min_budget_pct: float = 0.0025     # 25bps minimum
@@ -207,12 +231,35 @@ class OverlayConfig:
         "eu_banks": 0.20,   # Systemic risk
     })
 
+    # v2.4: Rates fragmentation config
+    rates_config: RatesFragmentationConfig = field(
+        default_factory=RatesFragmentationConfig
+    )
+
     @classmethod
     def from_settings(cls, settings: Dict[str, Any]) -> "OverlayConfig":
         """Create config from settings dict."""
         overlay_settings = settings.get('sovereign_overlay', {})
 
+        # v2.4: Parse mode
+        mode_str = overlay_settings.get('mode', 'legacy')
+        try:
+            mode = OverlayMode(mode_str.lower())
+        except ValueError:
+            mode = OverlayMode.LEGACY
+
+        # v2.4: Parse rates config
+        rates_settings = overlay_settings.get('rates_config', {})
+        rates_config = RatesFragmentationConfig(
+            bund_symbol=rates_settings.get('bund_symbol', 'FGBL'),
+            btp_symbol=rates_settings.get('btp_symbol', 'FBTP'),
+            spread_trigger_bps=rates_settings.get('spread_trigger_bps', 50.0),
+            spread_ma_days=rates_settings.get('spread_ma_days', 20),
+            position_sizing=rates_settings.get('position_sizing', 'dv01_matched'),
+        )
+
         return cls(
+            mode=mode,
             annual_budget_pct=overlay_settings.get('annual_budget_pct', 0.0035),
             min_budget_pct=overlay_settings.get('min_budget_pct', 0.0025),
             max_budget_pct=overlay_settings.get('max_budget_pct', 0.0050),
@@ -224,6 +271,7 @@ class OverlayConfig:
             target_dte=overlay_settings.get('target_dte', 60),
             use_spreads=overlay_settings.get('use_spreads', True),
             spread_width_pct=overlay_settings.get('spread_width_pct', 0.05),
+            rates_config=rates_config,
         )
 
 

@@ -631,7 +631,7 @@ run_ledger:
   cleanup_days: 90                    # Keep 90 days of run history
 
 # ============================================================================
-# RISK PARITY ALLOCATOR (Phase 1)
+# RISK PARITY ALLOCATOR (Phase 1 + v2.4 Regime-Aware Blending)
 # Inverse-volatility weighting across strategy sleeves
 # ============================================================================
 risk_parity:
@@ -652,6 +652,31 @@ risk_parity:
   vol_lookback_short: 20              # Short-term vol window (days)
   vol_lookback_long: 60               # Long-term vol window (days)
   ewma_span: 20                       # EWMA span for vol calculation
+
+  # v2.4: Regime-Aware Blending
+  # Shifts allocation between base (risk-on) and safe-haven sleeves by regime
+  regime_blending_enabled: true
+  regime_ema_alpha: 0.5               # 3-day EMA smoothing (alpha = 2/(3+1))
+
+  # Regime blend targets: base vs safe-haven allocation
+  regime_blending:
+    normal:
+      base: 0.85                      # 85% to risk-on sleeves in normal
+      safe: 0.15                      # 15% to safe-haven sleeves in normal
+    elevated:
+      base: 0.65                      # 65% to risk-on sleeves when elevated
+      safe: 0.35                      # 35% to safe-haven sleeves when elevated
+    crisis:
+      base: 0.35                      # 35% to risk-on sleeves in crisis
+      safe: 0.65                      # 65% to safe-haven sleeves in crisis
+
+  # Sleeve classification: base (risk-on) vs safe (defensive)
+  sleeve_classification:
+    core_index_rv: base               # Long/short equity - reduce in crisis
+    sector_pairs: base                # Sector rotation - reduce in crisis
+    credit_carry: base                # Credit exposure - reduce in crisis
+    europe_vol_convex: safe           # Vol hedges - increase in crisis
+    money_market: safe                # Cash - increase in crisis
 
 # ============================================================================
 # SOVEREIGN CRISIS OVERLAY (Phase 2)
@@ -685,13 +710,69 @@ sovereign_overlay:
     eu_banks: 0.20                    # EUFN - systemic risk
 
 # ============================================================================
-# STRATEGY INTEGRATION (Phase 3)
+# HEDGE LADDER (v2.4)
+# 3-expiry ladder with two-bucket structure for persistent hedging
+# ============================================================================
+hedge_ladder:
+  enabled: true
+  annual_budget_pct: 0.0040           # 40bps annual budget
+
+  # Bucket allocations (sum to 1.0)
+  buckets:
+    crash_convexity:
+      allocation: 0.40                # 40% of budget
+      strike_pct_otm: 0.18            # 18% OTM (deep protection)
+    crisis_monetizers:
+      allocation: 0.60                # 60% of budget
+      strike_pct_otm: 0.08            # 8% OTM (faster payoff)
+
+  # Ladder structure
+  ladder:
+    legs: [30, 60, 90]                # Target DTEs
+    roll_trigger_dte: 21              # Roll at 21 DTE
+    low_vol_roll_dte: 7               # Roll at 7 DTE in low vol
+    skip_roll_vix_spike_pct: 0.15     # Skip roll if VIX up >15%
+
+  # Underlying symbols
+  primary_underlying: "SPY"           # Primary hedge instrument
+  secondary_underlying: "EWG"         # Europe exposure proxy
+
+# ============================================================================
+# CREDIT SLEEVE (v2.4 Defensive Mode)
+# Regime-gated, IG/floating only (no HY/BDC)
+# ============================================================================
+credit_sleeve:
+  enabled: true
+  max_allocation_pct: 0.05            # 5% max (down from 8%)
+
+  # Regime caps - credit exposure reduces with stress
+  regime_caps:
+    normal: 0.05                      # 5% in normal conditions
+    elevated: 0.02                    # 2% when elevated
+    crisis: 0.00                      # 0% in crisis (full exit)
+
+  # Allowed instruments (IG and floating rate only)
+  allowed_instruments:
+    - lqde                            # iShares IG Corp (LQDE)
+    - flot                            # iShares Floating Rate (FLOT)
+
+  # Removed instruments (v2.4 - too correlated with equity drawdowns)
+  # - ihyu                            # High Yield - removed
+  # - arcc                            # BDC - removed
+
+  # Unwind settings for removed instruments
+  unwind_days: 5                      # Gradual unwind over 5 days
+  unwind_start_date: null             # Set to date to begin unwind
+
+# ============================================================================
+# STRATEGY INTEGRATION (Phase 3 + v2.4)
 # Merges risk parity weights with sovereign overlay positions
 # ============================================================================
 strategy_integration:
   use_risk_parity: true               # Enable risk parity weight blending
   risk_parity_weight: 0.7             # 70% risk parity, 30% base strategy
   use_sovereign_overlay: true         # Enable sovereign overlay
+  use_hedge_ladder: true              # v2.4: Enable hedge ladder
   sovereign_budget_pct: 0.0035        # Must match sovereign_overlay setting
 
   # Portfolio constraints

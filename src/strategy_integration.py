@@ -21,7 +21,7 @@ from .strategy_logic import (
     Strategy, StrategyOutput, SleeveTargets, OrderSpec, FXHedgePolicy
 )
 from .risk_engine import RiskEngine, RiskDecision, RiskRegime
-from .risk_parity import RiskParityAllocator, RiskParityWeights, RiskParityConfig
+from .risk_parity import RiskParityAllocator, RiskParityWeights, RiskParityConfig, Regime
 from .sovereign_overlay import (
     SovereignCrisisOverlay, OverlayConfig, SOVEREIGN_PROXIES
 )
@@ -212,14 +212,19 @@ class IntegratedStrategy:
             # Update sleeve returns from portfolio
             self._update_risk_parity_returns(portfolio)
 
-            # Compute weights
+            # v2.4: Convert risk regime to risk parity regime for regime-aware blending
+            rp_regime = self._convert_to_rp_regime(risk_decision.regime)
+
+            # Compute weights with regime-aware blending
             rp_weights = self.risk_parity.compute_risk_parity_weights(
                 portfolio_state=portfolio,
-                today=today
+                today=today,
+                regime=rp_regime
             )
 
             logger.info(
-                f"Risk parity: expected_vol={rp_weights.expected_portfolio_vol:.2%}, "
+                f"Risk parity: regime={rp_regime.value}, "
+                f"expected_vol={rp_weights.expected_portfolio_vol:.2%}, "
                 f"scaling={rp_weights.scaling_factor:.2f}"
             )
 
@@ -296,6 +301,28 @@ class IntegratedStrategy:
             # In production, would compute actual sleeve returns
             if hasattr(portfolio, 'returns_series') and portfolio.returns_series is not None:
                 self.risk_parity.update_sleeve_returns(sleeve, portfolio.returns_series)
+
+    def _convert_to_rp_regime(self, risk_regime: RiskRegime) -> Regime:
+        """
+        Convert RiskRegime from risk_engine to Regime for risk_parity.
+
+        v2.4: Maps the existing risk regime system to the risk parity
+        regime-aware blending system.
+
+        Args:
+            risk_regime: Risk regime from risk_engine
+
+        Returns:
+            Regime enum for risk_parity
+        """
+        # Map RiskRegime enum values to Regime enum values
+        regime_map = {
+            RiskRegime.NORMAL: Regime.NORMAL,
+            RiskRegime.ELEVATED: Regime.ELEVATED,
+            RiskRegime.CRISIS: Regime.CRISIS,
+        }
+
+        return regime_map.get(risk_regime, Regime.NORMAL)
 
     def _blend_weights(
         self,
