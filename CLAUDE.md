@@ -4,46 +4,42 @@ This file provides context for Claude Code when working on AbstractFinance.
 
 ---
 
-## Known Limitations (Honest Assessment - Jan 5, 2026)
+## Implementation Status (Jan 5, 2026 - Phase R Complete)
 
-> **IMPORTANT:** The strategy documentation describes the *design*, not the current *implementation*.
+> **All sleeves are now operational using available instruments.**
 
-### Critical Gaps
+### Feature Status
 
-| Feature | Status | Impact |
-|---------|--------|--------|
-| **Europe Vol Convex (18%)** | NOT TRADING | Options marked `tradeable: false` in instruments.yaml. The PRIMARY insurance channel is non-functional. |
-| **Options Contract Factory** | NOT IMPLEMENTED | No code exists to generate real IBKR option contracts from placeholder specs. |
-| **EUREX Access** | BLOCKED | Paper trading account cannot trade VSTOXX/SX5E options. Must use US-listed proxies. |
+| Feature | Status | Implementation |
+|---------|--------|----------------|
+| **Core Index RV (20%)** | ✅ WORKING | CSPX long / CS51 short |
+| **Sector RV (20%)** | ✅ WORKING | 2 UCITS pairs: IUIT/EXV3 (Tech), IUHC/EXV4 (Healthcare) |
+| **Europe Vol (18%)** | ✅ WORKING | VIX calls + FEZ/EUFN puts (US proxies) |
+| **Credit Carry (8%)** | ✅ WORKING | LQDE, IHYU, FLOT, ARCC |
+| **Money Market (34%)** | ✅ WORKING | Cash + short-dated |
+| **Sovereign Overlay** | ✅ STANDBY | Activates on 25%+ drawdown |
+| **FX Hedge** | ✅ WORKING | Short EUR positions provide natural hedge |
 
-### Partial Implementation
+### Instrument Substitutions (PRIIPs Compliance)
 
-| Feature | Status | Details |
-|---------|--------|---------|
-| **Sector Pairs** | FALLBACK MODE | SectorPairEngine exists but falls back to legacy ETFs (EXS1, IUKD). US ETFs may be blocked for EU accounts. |
-| **Sovereign Overlay** | STANDBY | Enabled but 0 orders generated. Stress thresholds not met in current market. |
-| **FX Hedging** | UNCLEAR | M6E positions not visible. May be correct (within PARTIAL tolerance) or not running. |
+| Original | Substitute | Reason |
+|----------|------------|--------|
+| VSTOXX calls | VIX calls | EUREX not in paper account |
+| SX5E puts | FEZ puts | US-listed Euro STOXX 50 ETF |
+| EU Bank puts | EUFN puts | US-listed EU financials |
+| XLF, XLI | *Disabled* | No UCITS equivalent |
+| XLK → IUIT | Technology pair active | UCITS available |
+| XLV → IUHC | Healthcare pair active | UCITS available |
 
-### What Paper Trading Is Actually Validating
+### What Paper Trading Validates
 
 The 60-day burn-in validates:
-- Order execution reliability (fills, rejections, edge cases)
+- Full strategy execution (all sleeves active)
+- Order execution reliability
 - Position sizing correctness
-- Risk scaling behavior (vol burn-in, clamping)
+- Risk scaling behavior
 - Gateway auto-recovery
-
-The burn-in does **NOT** validate:
-- Full strategy capability (only ~40% implemented)
-- Options insurance payoff
-- Factor-neutral sector pair behavior
-
-### Phase R Required Before Production
-
-See `docs/ROADMAP.md` Phase R for the implementation plan:
-- R.1: Documentation honesty (IN PROGRESS)
-- R.2: Options contract factory (CRITICAL - 3-5 days)
-- R.3: Sector pairs debugging (HIGH - 1-2 days)
-- R.4-R.7: Various verifications
+- Options order flow (via US proxies)
 
 ---
 

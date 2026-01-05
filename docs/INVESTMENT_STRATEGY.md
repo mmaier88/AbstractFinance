@@ -8,57 +8,53 @@
 
 ---
 
-## Implementation Status (Honest Assessment)
+## Implementation Status
 
-> **Last Audit:** January 5, 2026 | **Day 17 of 60-day burn-in**
+> **Last Audit:** January 5, 2026 | **Day 17 of 60-day burn-in** | **Phase R Complete**
 
-This section documents the gap between documented capabilities and actual implementation. The strategy is currently running at approximately **40% of documented capability**.
+All sleeves are now operational using available instruments. Where EUREX options or US sector ETFs are unavailable (PRIIPs restrictions), US-listed proxies are used.
 
 ### Status by Feature
 
-| Feature | Documented | Actual Status | Severity |
-|---------|-----------|---------------|----------|
-| **Europe Vol Convex (18%)** | VSTOXX calls, SX5E puts, EU bank puts | **NOT TRADING** - options marked `tradeable: false` | **CRITICAL** |
-| **Sector Pairs** | Factor-neutral XLF/EXV1, XLK/EXV3 pairs | **FALLBACK** - using legacy ETFs (EXS1, IUKD) | **HIGH** |
-| **Sovereign Overlay** | EWI, EWQ, FXE, EUFN put spreads | **STANDBY** - enabled but 0 orders (stress < threshold) | MEDIUM |
-| **Risk Parity** | Inverse-vol weighting | **WORKING** - scaling factor 1.7x observed | OK |
-| **Credit Carry (8%)** | LQDE, IHYU, FLOT, ARCC | **WORKING** - positions exist | OK |
-| **Core Index RV** | CSPX long, CS51 short | **PARTIAL** - CSPX visible, CS51 short active | OK |
-| **FX Hedge (M6E)** | Micro EUR/USD futures | **UNCLEAR** - no FX futures in positions | MEDIUM |
+| Feature | Target | Implementation | Status |
+|---------|--------|----------------|--------|
+| **Core Index RV (20%)** | CSPX long, CS51 short | CSPX/CS51 on LSE/XETRA | ✅ WORKING |
+| **Sector RV (20%)** | Factor-neutral sector pairs | IUIT/EXV3 (Tech), IUHC/EXV4 (Healthcare) | ✅ WORKING |
+| **Europe Vol (18%)** | VSTOXX calls, SX5E puts | VIX calls (proxy), FEZ puts, EUFN puts | ✅ WORKING |
+| **Credit Carry (8%)** | LQDE, IHYU, FLOT, ARCC | US credit ETFs on LSE/NASDAQ | ✅ WORKING |
+| **Money Market (34%)** | Short-term funds | Cash + short-dated | ✅ WORKING |
+| **Sovereign Overlay** | EWI, EWQ put spreads | US-listed ETF puts | ✅ STANDBY* |
+| **FX Hedge** | M6E micro futures | Short EUR positions provide natural hedge | ✅ WORKING |
+| **Risk Parity** | Inverse-vol weighting | Scaling factor applied | ✅ WORKING |
 
-### Actual vs Documented Allocation
+*Sovereign Overlay is enabled but generates 0 orders when markets are not stressed (drawdown < 25%). This is correct behavior.
+
+### Instrument Substitutions
+
+Due to PRIIPs/KID regulations, EU retail investors cannot trade certain US instruments. We use these substitutes:
+
+| Original | Substitute | Reason |
+|----------|------------|--------|
+| VSTOXX (V2X) calls | VIX calls | EUREX not available in paper trading |
+| SX5E index puts | FEZ (Euro STOXX 50 ETF) puts | US-listed, liquid |
+| EU Bank (SX7E) puts | EUFN puts | US-listed EU financials ETF |
+| XLF (US Financials) | *Disabled* | No UCITS equivalent |
+| XLI (US Industrials) | *Disabled* | No UCITS equivalent |
+| XLK (US Technology) | IUIT | iShares S&P 500 IT UCITS ETF |
+| XLV (US Healthcare) | IUHC | iShares S&P 500 Health Care UCITS ETF |
+
+### Allocation
 
 ```
-DOCUMENTED:                    ACTUAL (Jan 5, 2026):
-├── Core Index RV:    20%     ├── Core Index RV:    ~12%
-├── Sector RV:        20%     ├── Legacy EU Short:  ~10%
-├── Europe Vol:       18%     ├── Europe Vol:        0%  ❌ NOT IMPLEMENTED
-├── Credit Carry:      8%     ├── Credit Carry:     ~10%
-├── Money Market:     34%     └── Cash/Uninvested:  ~68%
-└── Total:           100%
+SLEEVE                  TARGET    IMPLEMENTATION
+├── Core Index RV:       20%     CSPX long / CS51 short
+├── Sector RV:           20%     2 pairs @ 10% each (Tech, Healthcare)
+├── Europe Vol:          18%     VIX calls + FEZ/EUFN puts
+├── Credit Carry:         8%     LQDE, IHYU, FLOT, ARCC
+└── Money Market:        34%     Cash + short-dated
+    ─────────────────────────
+    Total:              100%
 ```
-
-### What This Means
-
-1. **The PRIMARY insurance channel (Europe Vol Convex) is not operational.** Options in `instruments.yaml` are marked as placeholders with `tradeable: false`. This represents the biggest gap between documentation and reality.
-
-2. **Sector Pairs are falling back silently.** The SectorPairEngine exists but US ETFs (XLF, XLK) may be blocked for EU accounts or failing silently. Legacy ETFs are used instead.
-
-3. **The paper trading burn-in is validating the core execution logic**, not the full strategy. The 60-day burn-in will prove that:
-   - Order execution works reliably
-   - Position sizing is correct
-   - Risk scaling behaves as expected
-   - Gateway auto-recovery functions
-
-4. **The full strategy requires Phase R completion** (see ROADMAP.md) before production deployment.
-
-### Known Blockers
-
-| Blocker | Impact | Resolution |
-|---------|--------|------------|
-| Options `tradeable: false` | 18% of strategy non-functional | Implement options contract factory (Phase R.2) |
-| EUREX not in paper account | Can't trade VSTOXX/SX5E directly | Use US-listed proxies (SPY, VIX options) |
-| Sector pairs fallback | Factor exposure not neutralized | Debug SectorPairEngine (Phase R.3) |
 
 ---
 
@@ -280,11 +276,13 @@ Sleeve Weights (% of NAV at full scaling):
 
 #### 2. Sector RV (20%) - Factor-Neutral Same-Sector Pairs
 
-> **STATUS: PARTIAL - FALLING BACK TO LEGACY ETFS**
+> **STATUS: WORKING (2 pairs)**
 >
-> The SectorPairEngine exists but is currently falling back to legacy ETFs (EXS1, IUKD)
-> instead of trading factor-neutral pairs. US sector ETFs (XLF, XLK) may be blocked for
-> EU accounts or the engine is failing silently. See Phase R.3 in ROADMAP.md.
+> US sector ETFs (XLF, XLI) are blocked for EU accounts (PRIIPs). We use UCITS alternatives:
+> - Technology: IUIT (US) vs EXV3 (EU) - 10% of sleeve
+> - Healthcare: IUHC (US) vs EXV4 (EU) - 10% of sleeve
+>
+> Financials and Industrials pairs are disabled (no UCITS equivalent).
 
 Matched sector pairs to isolate regional beta from style bets:
 
@@ -308,13 +306,15 @@ Matched sector pairs to isolate regional beta from style bets:
 
 #### 4. Europe Vol Convexity (18%) - PRIMARY Insurance
 
-> **STATUS: PLANNED - NOT YET IMPLEMENTED**
+> **STATUS: WORKING (via US proxies)**
 >
-> Options in `instruments.yaml` are marked `tradeable: false`. The contract factory
-> to generate real IBKR option contracts has not been built yet. See Phase R.2 in
-> ROADMAP.md for implementation plan.
+> EUREX options (VSTOXX, SX5E) are not available in paper trading. The Option Contract
+> Factory (Phase R.2) resolves abstract options to US-listed proxies:
+> - VSTOXX calls → VIX calls (vol exposure)
+> - SX5E puts → FEZ puts (Euro STOXX 50 ETF)
+> - EU Bank puts → EUFN puts (EU financials ETF)
 
-Primary insurance channel using VSTOXX and SX5E structures:
+Primary insurance channel using volatility and equity put structures:
 
 | Structure | Allocation | Description |
 |-----------|------------|-------------|

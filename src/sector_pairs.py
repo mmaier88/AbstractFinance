@@ -214,11 +214,11 @@ class SectorPairEngine:
 
     DEFAULT_CONFIG = {
         # Sector selection
+        # NOTE: Only Technology and Healthcare have UCITS equivalents for US sector ETFs
+        # Financials (XLF) and Industrials (XLI) are blocked by PRIIPs for EU investors
         "included_sectors": [
-            Sector.FINANCIALS,
-            Sector.TECHNOLOGY,
-            Sector.INDUSTRIALS,
-            Sector.HEALTHCARE,
+            Sector.TECHNOLOGY,   # IUIT (US) vs EXV3 (EU) - 10% of sleeve
+            Sector.HEALTHCARE,   # IUHC (US) vs EXV4 (EU) - 10% of sleeve
         ],
 
         # Position sizing
