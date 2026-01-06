@@ -180,7 +180,7 @@ class IntegratedStrategy:
         if self.config.use_hedge_ladder:
             ladder_config = HedgeLadderConfig.from_settings(settings)
             ladder_config.annual_budget_pct = self.config.hedge_ladder_budget_pct
-            self.hedge_ladder = HedgeLadderEngine(ladder_config, instruments_config)
+            self.hedge_ladder = HedgeLadderEngine(ladder_config)
 
         # Tail hedge manager (passed or created)
         self.tail_hedge_manager = tail_hedge_manager or TailHedgeManager(
