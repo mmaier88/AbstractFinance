@@ -178,17 +178,17 @@ schedule:
   run_times:
     - name: "EU_open"
       hour_utc: 9
-      minute_utc: 0
-      # Exchanges that should execute during this window
+      minute_utc: 15
+      # LSE/XETRA open at 08:00 UTC - run 1h15m after for price discovery
       exchanges: ["LSE", "LSEETF", "XETRA", "IBIS"]
     - name: "US_open"
-      hour_utc: 14
-      minute_utc: 45
-      # US markets open at 14:30 UTC, run 15 min after for stability
+      hour_utc: 15
+      minute_utc: 0
+      # NYSE opens at 14:30 UTC - run 30 min after for stability
       exchanges: ["NYSE", "NASDAQ", "SMART", "CME", "GLOBEX"]
   # Legacy single-time fallback (used if run_times not defined)
   run_hour_utc: 9
-  run_minute_utc: 0
+  run_minute_utc: 15
 
 # IBKR Connection
 ibkr:
