@@ -289,6 +289,61 @@ See `docs/EXECUTION_DEBUGGING_LOG.md` for full details. Summary:
 
 ---
 
+## Security Hardening (Jan 6, 2026)
+
+### Pre-commit Hook for Secret Detection
+
+Installed git hooks to prevent accidental secret commits:
+
+```bash
+# Install hooks
+./scripts/install-hooks.sh
+
+# Hook detects:
+# - Plaintext passwords/tokens
+# - AWS access keys
+# - Private keys
+# - .env files (except .env.template)
+```
+
+**Files:**
+- `git-hooks/pre-commit` - The hook script
+- `scripts/install-hooks.sh` - Installation script
+
+### Scheduler Module Refactoring
+
+Split `scheduler.py` from 2,477 → 2,080 lines:
+
+| New Module | Contents |
+|------------|----------|
+| `src/scheduler/maintenance.py` | IBKR maintenance window detection |
+| `src/scheduler/continuous.py` | ContinuousScheduler class |
+| `src/scheduler/__init__.py` | Re-exports for backward compatibility |
+
+DailyScheduler remains in `scheduler.py` (tightly coupled, future migration planned).
+
+### Exception Handler Improvements
+
+Fixed 12 silent `except Exception: pass` handlers with proper logging:
+
+| File | Handlers Fixed |
+|------|----------------|
+| `execution_ibkr.py` | 3 (contract qualification, order cancel, NAV fetch) |
+| `portfolio.py` | 1 (price fetch fallback) |
+| `scheduler.py` | 3 (alert sending) |
+| `reconnect.py` | 4 (connection callbacks, heartbeat) |
+
+### Security Audit Findings (Resolved)
+
+| Finding | Status | Action |
+|---------|--------|--------|
+| Plaintext `.env` on staging | ✅ FIXED | Deleted file |
+| No pre-commit secret detection | ✅ FIXED | Hook installed |
+| Silent exception handlers | ✅ FIXED | Added logging |
+| Example passwords in docs | ✅ FIXED | Replaced with placeholders |
+
+---
+
 ## Paper Trading Burn-In Status
 
 **Inception:** December 18, 2025

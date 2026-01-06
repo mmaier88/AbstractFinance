@@ -373,9 +373,9 @@ class PortfolioState:
                 try:
                     current_price = data_feed.get_last_price(inst_id)
                     position.market_price = current_price
-                except Exception:
+                except Exception as e:
                     # Use last known price - don't skip the position
-                    pass
+                    logger.debug(f"Failed to get price for {inst_id}, using last known: {e}")
 
             # Use position_nav_value for correct NAV calculation
             # This handles futures correctly (P&L only, not notional)

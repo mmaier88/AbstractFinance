@@ -1,6 +1,11 @@
 """
 Daily run scheduler and orchestrator for AbstractFinance.
 Main entrypoint for automated trading execution.
+
+NOTE: This module has been partially refactored into the scheduler/ package.
+- ContinuousScheduler: moved to scheduler/continuous.py
+- Maintenance utilities: moved to scheduler/maintenance.py
+- DailyScheduler: remains here (tightly coupled, needs careful migration)
 """
 
 import os
@@ -16,6 +21,9 @@ import pandas as pd
 import pytz
 
 from .data_feeds import DataFeed, load_instruments_config, load_settings
+# Import from refactored modules
+from .scheduler.maintenance import is_maintenance_window, IBKR_MAINTENANCE_WINDOWS
+from .scheduler.continuous import ContinuousScheduler
 from .portfolio import PortfolioState, load_portfolio_state, save_portfolio_state, load_returns_history, save_returns_history
 from .risk_engine import RiskEngine, RiskDecision
 from .strategy_logic import Strategy, OrderSpec, generate_rebalance_orders
@@ -102,77 +110,8 @@ except ImportError:
     OPTION_FACTORY_AVAILABLE = False
 
 
-# =============================================================================
-# IBKR Maintenance Window Configuration
-# =============================================================================
-# IBKR has regular maintenance windows when connections may be unstable:
-# - Weekly: Sunday 23:45 - Monday 00:45 UTC (system restart)
-# - Daily: 22:00 - 22:15 UTC (possible brief disconnects)
-#
-# During these windows, we should avoid placing orders.
-
-IBKR_MAINTENANCE_WINDOWS = [
-    # Weekly maintenance (Sunday night UTC)
-    {
-        "name": "weekly_restart",
-        "days": [6],  # Sunday (0=Monday, 6=Sunday in Python weekday())
-        "start_hour": 23,
-        "start_minute": 45,
-        "end_hour": 24,  # Wraps to next day
-        "end_minute": 45,  # Actually 00:45 next day
-    },
-    # Daily maintenance window
-    {
-        "name": "daily_disconnect",
-        "days": [0, 1, 2, 3, 4],  # Monday-Friday
-        "start_hour": 22,
-        "start_minute": 0,
-        "end_hour": 22,
-        "end_minute": 15,
-    },
-]
-
-
-def is_maintenance_window(now: Optional[datetime] = None) -> tuple:
-    """
-    Check if the current time is within an IBKR maintenance window.
-
-    Args:
-        now: Optional datetime (UTC), defaults to current time
-
-    Returns:
-        Tuple of (is_maintenance: bool, window_name: str, minutes_remaining: int)
-    """
-    if now is None:
-        now = datetime.now(pytz.UTC)
-
-    current_day = now.weekday()
-    current_minutes = now.hour * 60 + now.minute
-
-    for window in IBKR_MAINTENANCE_WINDOWS:
-        if current_day not in window["days"]:
-            continue
-
-        start_minutes = window["start_hour"] * 60 + window["start_minute"]
-
-        # Handle overnight windows (end_hour >= 24)
-        if window["end_hour"] >= 24:
-            end_minutes = (window["end_hour"] - 24) * 60 + window["end_minute"]
-            # Check if we're in the first part (before midnight) or second part (after midnight)
-            if current_minutes >= start_minutes:
-                # We're before midnight, in maintenance
-                remaining = (24 * 60 - current_minutes) + end_minutes
-                return (True, window["name"], remaining)
-            elif current_day == 0 and current_minutes < end_minutes:
-                # Monday morning, check if we're still in Sunday's window
-                return (True, window["name"], end_minutes - current_minutes)
-        else:
-            end_minutes = window["end_hour"] * 60 + window["end_minute"]
-            if start_minutes <= current_minutes < end_minutes:
-                remaining = end_minutes - current_minutes
-                return (True, window["name"], remaining)
-
-    return (False, None, 0)
+# Maintenance window constants and function imported from scheduler.maintenance module
+# See: from .scheduler.maintenance import is_maintenance_window, IBKR_MAINTENANCE_WINDOWS
 
 try:
     from .alerts import AlertManager
@@ -2057,8 +1996,8 @@ class DailyScheduler:
                     drawdown=self.portfolio.current_drawdown,
                     hedge_budget=self.portfolio.hedge_budget_used_ytd
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.logger.warning(f"Failed to send daily summary alert: {e}")
 
         # EXECUTION_STACK_UPGRADE: Send execution analytics summary
         if self.execution_analytics and self.alert_manager:
@@ -2071,8 +2010,8 @@ class DailyScheduler:
                         title="Execution Summary",
                         message=exec_summary
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.logger.warning(f"Failed to send execution summary alert: {e}")
 
         # v2.4: Send attribution summary
         if hasattr(self, '_last_attribution_report') and self._last_attribution_report and self.alert_manager:
@@ -2085,8 +2024,8 @@ class DailyScheduler:
                         title="Attribution Report",
                         message=attribution_summary
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.logger.warning(f"Failed to send attribution report alert: {e}")
 
     def shutdown(self) -> None:
         """Clean shutdown of all components."""
@@ -2104,345 +2043,9 @@ class DailyScheduler:
             self.ib_client.disconnect()
 
 
-class ContinuousScheduler:
-    """
-    Runs the DailyScheduler on a continuous schedule.
-    Executes the daily run at the configured times each day.
-
-    Supports multiple run times per day, each targeting specific exchanges:
-    - EU_open: 9:00 UTC for LSE, XETRA
-    - US_open: 14:45 UTC for NYSE, NASDAQ, CME
-
-    Orders deferred due to market closure are included in subsequent runs.
-    """
-
-    # Startup delay to wait for IB Gateway to be ready
-    STARTUP_DELAY_SECONDS = 120  # 2 minutes
-    # Max retries for initialization failures
-    MAX_INIT_RETRIES = 10  # Increased from 5 to handle gateway restart cycles
-    # Delay between init retries
-    INIT_RETRY_DELAY_SECONDS = 90  # Increased from 60 to give gateway more time
-    # Max time to wait for gateway to be API-ready
-    GATEWAY_READY_TIMEOUT_SECONDS = 600  # 10 minutes total budget
-
-    def __init__(self):
-        self.running = True
-        self.scheduler: Optional[DailyScheduler] = None
-        self.last_run_date: Optional[date] = None
-        self.completed_runs_today: set = set()  # Track which run names completed today
-
-        # Load settings for schedule config
-        settings = load_settings("config/settings.yaml")
-        schedule_config = settings.get('schedule', {})
-        self.timezone = pytz.timezone(schedule_config.get('timezone', 'UTC'))
-
-        # Load multiple run times if configured, otherwise use legacy single time
-        self.run_times = schedule_config.get('run_times', [])
-        if not self.run_times:
-            # Legacy fallback: single run time
-            self.run_times = [{
-                'name': 'daily',
-                'hour_utc': schedule_config.get('run_hour_utc', 6),
-                'minute_utc': schedule_config.get('run_minute_utc', 0),
-                'exchanges': []  # Empty = all exchanges
-            }]
-
-        print(f"Configured run times: {[rt['name'] for rt in self.run_times]}")
-
-        # Set up signal handlers for graceful shutdown
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals gracefully."""
-        print(f"Received signal {signum}, shutting down...")
-        self.running = False
-
-    def _should_run_now(self) -> tuple:
-        """
-        Check if it's time to run a scheduled job.
-
-        Returns:
-            Tuple of (should_run: bool, run_config: dict or None)
-            run_config contains 'name', 'hour_utc', 'minute_utc', 'exchanges'
-        """
-        now = datetime.now(pytz.UTC)
-        today = now.date()
-
-        # Reset completed runs on new day
-        if self.last_run_date != today:
-            self.completed_runs_today = set()
-            self.last_run_date = today
-
-        # Check each configured run time
-        for run_config in self.run_times:
-            run_name = run_config.get('name', 'default')
-
-            # Skip if already completed this run today
-            if run_name in self.completed_runs_today:
-                continue
-
-            scheduled_time = now.replace(
-                hour=run_config['hour_utc'],
-                minute=run_config['minute_utc'],
-                second=0,
-                microsecond=0
-            )
-
-            if now >= scheduled_time:
-                return (True, run_config)
-
-        return (False, None)
-
-    def _seconds_until_next_run(self) -> int:
-        """
-        Calculate seconds until next scheduled run.
-
-        Considers all configured run times and finds the soonest one
-        that hasn't been completed today.
-        """
-        now = datetime.now(pytz.UTC)
-        today = now.date()
-
-        candidates = []
-
-        for run_config in self.run_times:
-            run_name = run_config.get('name', 'default')
-
-            # Create scheduled time for today
-            scheduled_time = now.replace(
-                hour=run_config['hour_utc'],
-                minute=run_config['minute_utc'],
-                second=0,
-                microsecond=0
-            )
-
-            # If this run is already completed today or past, schedule for tomorrow
-            if run_name in self.completed_runs_today or now >= scheduled_time:
-                scheduled_time += timedelta(days=1)
-
-            candidates.append(scheduled_time)
-
-        # Find the soonest scheduled time
-        if candidates:
-            next_run = min(candidates)
-        else:
-            # Fallback: tomorrow at 6:00 UTC
-            next_run = now.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
-
-        delta = next_run - now
-        return max(int(delta.total_seconds()), 60)  # Minimum 60 seconds
-
-    def _wait_for_ib_gateway(self) -> bool:
-        """
-        Wait for IB Gateway to be ready before proceeding.
-
-        Returns:
-            True if gateway appears ready, False if interrupted
-        """
-        print(f"Waiting {self.STARTUP_DELAY_SECONDS}s for IB Gateway to be ready...")
-
-        # Wait in small increments to allow for graceful shutdown
-        remaining = self.STARTUP_DELAY_SECONDS
-        while remaining > 0 and self.running:
-            time.sleep(min(10, remaining))
-            remaining -= 10
-            if remaining > 0:
-                print(f"  ...{remaining}s remaining")
-
-        return self.running
-
-    def _check_gateway_api_ready(self, host: str = "ibgateway", port: int = 4000) -> bool:
-        """
-        Check if IB Gateway is truly API-ready (not just accepting connections).
-
-        This is more reliable than just checking if the port is open, because
-        the socat proxy in IBGA accepts connections even when the IB Gateway
-        backend isn't authenticated yet.
-
-        Returns:
-            True if gateway API is responding, False otherwise
-        """
-        try:
-            from ib_insync import IB
-            ib = IB()
-            # Use a short timeout and test client ID
-            ib.connect(host=host, port=port, clientId=99, timeout=15, readonly=True)
-            if ib.isConnected():
-                # Try to get account info to verify API is truly ready
-                accounts = ib.managedAccounts()
-                ib.disconnect()
-                if accounts:
-                    print(f"  Gateway API ready - accounts: {accounts}")
-                    return True
-            ib.disconnect()
-            return False
-        except Exception as e:
-            print(f"  Gateway API not ready: {e}")
-            return False
-
-    def _wait_for_gateway_api_ready(self, host: str = "ibgateway", port: int = 4000) -> bool:
-        """
-        Wait for IB Gateway API to be truly ready with timeout.
-
-        Returns:
-            True if gateway becomes API-ready, False if timeout or interrupted
-        """
-        print(f"Checking if IB Gateway API is ready (timeout: {self.GATEWAY_READY_TIMEOUT_SECONDS}s)...")
-
-        start_time = time.time()
-        check_interval = 30  # Check every 30 seconds
-
-        while self.running:
-            elapsed = time.time() - start_time
-            if elapsed >= self.GATEWAY_READY_TIMEOUT_SECONDS:
-                print(f"  Timeout waiting for gateway API after {elapsed:.0f}s")
-                return False
-
-            if self._check_gateway_api_ready(host, port):
-                print(f"  Gateway API ready after {elapsed:.0f}s")
-                return True
-
-            remaining = self.GATEWAY_READY_TIMEOUT_SECONDS - elapsed
-            print(f"  Gateway not ready, retrying in {check_interval}s ({remaining:.0f}s remaining)...")
-
-            # Wait before next check
-            wait_remaining = check_interval
-            while wait_remaining > 0 and self.running:
-                time.sleep(min(5, wait_remaining))
-                wait_remaining -= 5
-
-        return False
-
-    def _run_daily_with_retries(self, run_config: Optional[Dict] = None) -> bool:
-        """
-        Run the daily job with retries on initialization failure.
-
-        First waits for IB Gateway API to be truly ready (not just accepting
-        connections), then attempts initialization with retries.
-
-        Args:
-            run_config: Optional config for this specific run, containing:
-                - name: Run name (e.g., "EU_open", "US_open")
-                - exchanges: List of target exchanges for this run
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # First, wait for gateway API to be ready before any init attempts
-        # This prevents wasting retries on a gateway that's still restarting
-        if not self._wait_for_gateway_api_ready():
-            print("Gateway API not ready after timeout, skipping this run")
-            get_health_server().update_ib_status(False)
-            return False
-
-        for attempt in range(1, self.MAX_INIT_RETRIES + 1):
-            print(f"Initialization attempt {attempt}/{self.MAX_INIT_RETRIES}")
-
-            # Create new scheduler instance for each attempt
-            self.scheduler = DailyScheduler()
-
-            try:
-                if self.scheduler.initialize():
-                    # Update health server with IB connected status
-                    get_health_server().update_ib_status(True)
-
-                    # Pass run config to run_daily for exchange filtering
-                    result = self.scheduler.run_daily(run_config=run_config)
-
-                    run_name = run_config.get('name', 'daily') if run_config else 'daily'
-                    print(f"Run '{run_name}' completed: {json.dumps(result, indent=2)}")
-                    return True
-                else:
-                    get_health_server().update_ib_status(False)
-                    print(f"Initialization failed on attempt {attempt}")
-                    if attempt < self.MAX_INIT_RETRIES:
-                        print(f"Retrying in {self.INIT_RETRY_DELAY_SECONDS}s...")
-                        # Wait before retry
-                        remaining = self.INIT_RETRY_DELAY_SECONDS
-                        while remaining > 0 and self.running:
-                            time.sleep(min(10, remaining))
-                            remaining -= 10
-                        if not self.running:
-                            return False
-            finally:
-                self.scheduler.shutdown()
-                self.scheduler = None
-
-        print(f"Failed to initialize after {self.MAX_INIT_RETRIES} attempts")
-        return False
-
-    def run(self):
-        """Main loop - runs continuously, executing jobs at scheduled times."""
-        print(f"ContinuousScheduler started")
-        print(f"Configured run times:")
-        for rt in self.run_times:
-            print(f"  - {rt['name']}: {rt['hour_utc']:02d}:{rt['minute_utc']:02d} UTC "
-                  f"(exchanges: {rt.get('exchanges', 'all')})")
-        print(f"Current time: {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-
-        # Start health check server for external monitoring
-        health_server = start_health_server(port=8080)
-        print("Health check server running on port 8080")
-
-        # Start Prometheus metrics server
-        if METRICS_AVAILABLE:
-            start_metrics_server(port=8000)
-            print("Prometheus metrics server running on port 8000")
-
-        # Wait for IB Gateway to be ready on startup
-        if not self._wait_for_ib_gateway():
-            print("Startup interrupted")
-            health_server.stop()
-            return
-
-        while self.running:
-            try:
-                should_run, run_config = self._should_run_now()
-                if should_run and run_config:
-                    run_name = run_config.get('name', 'default')
-                    print(f"\n{'='*60}")
-                    print(f"Starting run '{run_name}' at {datetime.now(pytz.UTC).isoformat()}")
-                    print(f"Target exchanges: {run_config.get('exchanges', 'all')}")
-                    print(f"{'='*60}\n")
-
-                    success = self._run_daily_with_retries(run_config)
-
-                    # Mark this run as completed
-                    self.completed_runs_today.add(run_name)
-
-                    # Update health server with run result
-                    health_server.update_daily_run({
-                        "timestamp": datetime.now(pytz.UTC).isoformat(),
-                        "success": success,
-                        "date": date.today().isoformat(),
-                        "run_name": run_name
-                    })
-
-                    print(f"\n{'='*60}")
-                    print(f"Run '{run_name}' finished at {datetime.now(pytz.UTC).isoformat()}")
-                    print(f"{'='*60}\n")
-
-                # Calculate sleep time
-                sleep_seconds = self._seconds_until_next_run()
-                next_run_time = datetime.now(pytz.UTC) + timedelta(seconds=sleep_seconds)
-                print(f"Next run scheduled for: {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-                print(f"Sleeping for {sleep_seconds} seconds ({sleep_seconds/3600:.1f} hours)...")
-
-                # Sleep in small increments to allow for graceful shutdown
-                sleep_increment = 60  # Check every minute
-                while sleep_seconds > 0 and self.running:
-                    time.sleep(min(sleep_increment, sleep_seconds))
-                    sleep_seconds -= sleep_increment
-
-            except Exception as e:
-                print(f"Error in scheduler loop: {e}")
-                import traceback
-                traceback.print_exc()
-                # Wait a bit before retrying
-                time.sleep(300)  # 5 minutes
-
-        print("ContinuousScheduler stopped")
+# ContinuousScheduler has been moved to scheduler/continuous.py
+# It is imported at the top of this file for backward compatibility:
+# from .scheduler.continuous import ContinuousScheduler
 
 
 def main():

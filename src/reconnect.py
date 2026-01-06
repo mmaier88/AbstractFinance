@@ -302,8 +302,12 @@ class IBReconnectManager:
                     if self.on_connect:
                         try:
                             self.on_connect()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self.logger.log_alert(
+                                alert_type="on_connect_error",
+                                severity="warning",
+                                message=f"on_connect callback failed: {e}"
+                            )
 
                     return True
 
@@ -359,10 +363,13 @@ class IBReconnectManager:
                         if server_time:
                             self._stats.last_heartbeat_time = datetime.now()
                             last_activity = datetime.now()
-                    except Exception:
+                    except Exception as e:
                         # If reqCurrentTime fails, fall back to just isConnected check
+                        # This can happen during brief network issues
                         self._stats.last_heartbeat_time = datetime.now()
                         last_activity = datetime.now()
+                        # Log at debug level to avoid spam
+                        self.logger.logger.debug(f"reqCurrentTime failed (connection may be briefly unstable): {e}")
 
                 else:
                     # Connection lost
@@ -400,8 +407,8 @@ class IBReconnectManager:
         try:
             if self.ib.isConnected():
                 self.ib.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.logger.debug(f"Error during forced disconnect (may be already disconnected): {e}")
 
         self._reconnect()
 
@@ -421,8 +428,12 @@ class IBReconnectManager:
         if self.on_disconnect:
             try:
                 self.on_disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.log_alert(
+                    alert_type="on_disconnect_error",
+                    severity="warning",
+                    message=f"on_disconnect callback failed: {e}"
+                )
 
         # Attempt reconnection
         self._reconnect()

@@ -573,8 +573,8 @@ class IBClient:
             try:
                 self.ib.qualifyContracts(contract)
                 self._instruments_cache[instrument_id] = contract
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to qualify contract for {instrument_id}: {e}")
 
         return contract
 
@@ -782,7 +782,8 @@ class IBClient:
             self.ib.cancelOrder(trade.order)
             self.ib.sleep(1)
             return trade.orderStatus.status == "Cancelled"
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to cancel order {order_id}: {e}")
             return False
 
     def cancel_all_orders(self) -> int:
@@ -857,7 +858,8 @@ class IBClient:
         try:
             summary = self.get_account_summary()
             return summary.net_liquidation
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get NAV: {e}")
             return None
 
     def get_computed_nav(self, fx_rates) -> Optional[float]:
