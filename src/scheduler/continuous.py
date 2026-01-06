@@ -241,7 +241,7 @@ class ContinuousScheduler:
             True if successful, False otherwise
         """
         # Import here to avoid circular imports
-        from ..scheduler import DailyScheduler
+        from ..scheduler_main import DailyScheduler
 
         # First, wait for gateway API to be ready before any init attempts
         if not self._wait_for_gateway_api_ready():
