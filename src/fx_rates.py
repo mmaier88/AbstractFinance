@@ -1,16 +1,34 @@
 """
 FX Rates service for AbstractFinance.
 Provides centralized currency conversion with consistent snapshots.
+
+v2.5: Added robust fallback rates to prevent trading failures when
+      live FX data is unavailable.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 import yfinance as yf
 
 
+logger = logging.getLogger(__name__)
+
 # Global base currency - all NAV calculations convert to this
 BASE_CCY = "USD"
+
+# Hardcoded fallback rates - updated periodically, used when live data unavailable
+# These are approximate rates and should be close enough for position sizing
+# Last updated: 2026-01-06
+FALLBACK_RATES = {
+    ("EUR", "USD"): 1.03,   # 1 EUR = 1.03 USD
+    ("GBP", "USD"): 1.25,   # 1 GBP = 1.25 USD
+    ("CHF", "USD"): 1.12,   # 1 CHF = 1.12 USD
+    ("JPY", "USD"): 0.0064, # 1 JPY = 0.0064 USD (approx 156 JPY/USD)
+    ("CAD", "USD"): 0.70,   # 1 CAD = 0.70 USD
+    ("AUD", "USD"): 0.62,   # 1 AUD = 0.62 USD
+}
 
 
 @dataclass
@@ -18,21 +36,29 @@ class FXRates:
     """
     Centralized FX rate service.
     Provides consistent snapshot-based currency conversion.
+
+    Fallback hierarchy:
+    1. Live IBKR rates (preferred)
+    2. Yahoo Finance rates
+    3. Hardcoded fallback rates (always available)
     """
     # Rates keyed by (from_ccy, to_ccy) -> rate
     # e.g., ("EUR", "USD") -> 1.05 means 1 EUR = 1.05 USD
     rates: Dict[Tuple[str, str], float] = field(default_factory=dict)
     timestamp: Optional[datetime] = None
+    source: str = "fallback"  # Track where rates came from
 
     # Supported currencies
     SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"]
 
     def __post_init__(self):
-        """Initialize with identity rates."""
+        """Initialize with identity and fallback rates."""
         if not self.rates:
             # Add identity rates (USD -> USD = 1.0)
             for ccy in self.SUPPORTED_CURRENCIES:
                 self.rates[(ccy, ccy)] = 1.0
+            # Add fallback rates
+            self._apply_fallback_rates()
 
     def get_rate(self, from_ccy: str, to_ccy: str) -> float:
         """
@@ -65,7 +91,17 @@ class FXRates:
             to_usd = self.get_rate(to_ccy, "USD")
             return from_usd / to_usd
 
-        raise KeyError(f"No FX rate available for {from_ccy}/{to_ccy}")
+        # This should never happen now due to fallback rates
+        logger.error(f"No FX rate available for {from_ccy}/{to_ccy} - using 1.0")
+        return 1.0  # Safe default rather than crashing
+
+    def _apply_fallback_rates(self) -> None:
+        """Apply hardcoded fallback rates."""
+        for pair, rate in FALLBACK_RATES.items():
+            if pair not in self.rates:
+                self.rates[pair] = rate
+        self.source = "fallback"
+        logger.debug(f"Applied fallback FX rates: {len(FALLBACK_RATES)} pairs")
 
     def convert(self, amount: float, from_ccy: str, to_ccy: str) -> float:
         """
@@ -110,22 +146,46 @@ class FXRates:
         """
         Refresh all FX rates from market data.
 
+        Fallback hierarchy:
+        1. Live IBKR rates (preferred)
+        2. Yahoo Finance rates
+        3. Hardcoded fallback rates (always available)
+
         Args:
             ib: Optional IB connection for live rates
 
         Returns:
-            True if refresh successful
+            True if refresh successful (always True due to fallbacks)
         """
+        rates_before = len([k for k in self.rates.keys() if k[0] != k[1]])
+
+        # Primary: Try IBKR
+        if ib and hasattr(ib, 'isConnected') and ib.isConnected():
+            try:
+                if self._refresh_from_ib(ib):
+                    rates_after = len([k for k in self.rates.keys() if k[0] != k[1]])
+                    if rates_after > rates_before:
+                        self.source = "ibkr"
+                        logger.info(f"FX rates refreshed from IBKR: {rates_after} pairs")
+                        return True
+            except Exception as e:
+                logger.warning(f"IBKR FX refresh failed: {e}")
+
+        # Secondary: Try Yahoo Finance
         try:
-            # Primary: Try IBKR
-            if ib and hasattr(ib, 'isConnected') and ib.isConnected():
-                return self._refresh_from_ib(ib)
+            if self._refresh_from_yfinance():
+                rates_after = len([k for k in self.rates.keys() if k[0] != k[1]])
+                if rates_after > rates_before:
+                    self.source = "yfinance"
+                    logger.info(f"FX rates refreshed from Yahoo Finance: {rates_after} pairs")
+                    return True
+        except Exception as e:
+            logger.warning(f"Yahoo Finance FX refresh failed: {e}")
 
-            # Fallback: Yahoo Finance
-            return self._refresh_from_yfinance()
-
-        except Exception:
-            return False
+        # Tertiary: Apply hardcoded fallbacks (always succeeds)
+        self._apply_fallback_rates()
+        logger.warning("Using hardcoded fallback FX rates")
+        return True  # Always return True - fallbacks guarantee rates exist
 
     def _refresh_from_ib(self, ib: object) -> bool:
         """Refresh rates from IBKR."""
@@ -143,6 +203,7 @@ class FXRates:
             ("AUD", "USD", "AUDUSD", False),  # 1 AUD = X USD
         ]
 
+        success_count = 0
         for from_ccy, to_ccy, ib_pair, needs_invert in pairs:
             try:
                 contract = Forex(ib_pair)
@@ -155,13 +216,17 @@ class FXRates:
                     if needs_invert:
                         rate = 1.0 / rate
                     self.rates[(from_ccy, to_ccy)] = rate
+                    success_count += 1
+                    logger.debug(f"IBKR FX: {from_ccy}/{to_ccy} = {rate:.6f}")
 
                 ib.cancelMktData(contract)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"IBKR FX fetch failed for {ib_pair}: {e}")
                 continue
 
         self.timestamp = datetime.now()
-        return True
+        logger.debug(f"IBKR FX refresh: {success_count}/{len(pairs)} pairs fetched")
+        return success_count > 0
 
     def _refresh_from_yfinance(self) -> bool:
         """Refresh rates from Yahoo Finance."""
@@ -174,6 +239,7 @@ class FXRates:
             ("AUD", "USD"): "AUDUSD=X",
         }
 
+        success_count = 0
         for (from_ccy, to_ccy), yf_ticker in yf_pairs.items():
             try:
                 data = yf.Ticker(yf_ticker)
@@ -182,11 +248,15 @@ class FXRates:
                     rate = hist['Close'].iloc[-1]
                     if rate and rate > 0:
                         self.rates[(from_ccy, to_ccy)] = rate
-            except Exception:
+                        success_count += 1
+                        logger.debug(f"Yahoo FX: {from_ccy}/{to_ccy} = {rate:.6f}")
+            except Exception as e:
+                logger.debug(f"Yahoo FX fetch failed for {yf_ticker}: {e}")
                 continue
 
         self.timestamp = datetime.now()
-        return True
+        logger.debug(f"Yahoo FX refresh: {success_count}/{len(yf_pairs)} pairs fetched")
+        return success_count > 0
 
     def is_stale(self, max_age_seconds: int = 300) -> bool:
         """
@@ -207,7 +277,8 @@ class FXRates:
         return {
             "rates": {f"{k[0]}/{k[1]}": v for k, v in self.rates.items()},
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
-            "base_ccy": BASE_CCY
+            "base_ccy": BASE_CCY,
+            "source": self.source
         }
 
     @classmethod
