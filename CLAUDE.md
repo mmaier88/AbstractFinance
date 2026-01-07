@@ -4,9 +4,9 @@ This file provides context for Claude Code when working on AbstractFinance.
 
 ---
 
-## Implementation Status (Jan 5, 2026 - Phase R Complete)
+## Implementation Status (Jan 7, 2026 - Phase T In Progress)
 
-> **All sleeves are now operational using available instruments.**
+> **v3.0: EU Sovereign Fragility Short sleeve added. Credit carry and sovereign overlay replaced.**
 
 ### Feature Status
 
@@ -15,10 +15,26 @@ This file provides context for Claude Code when working on AbstractFinance.
 | **Core Index RV (20%)** | ✅ WORKING | CSPX long / CS51 short |
 | **Sector RV (20%)** | ✅ WORKING | 2 UCITS pairs: IUIT/EXV3 (Tech), IUHC/EXV4 (Healthcare) |
 | **Europe Vol (18%)** | ✅ WORKING | VIX calls + FEZ/EUFN puts (US proxies) |
-| **Credit Carry (8%)** | ✅ WORKING | LQDE, IHYU, FLOT, ARCC |
-| **Money Market (34%)** | ✅ WORKING | Cash + short-dated |
-| **Sovereign Overlay** | ✅ STANDBY | Activates on 25%+ drawdown |
+| **EU Sovereign Rates Short (12%)** | 🆕 NEW | Short FBTP / Long FGBL (DV01-neutral) |
+| **Money Market (30%)** | ✅ WORKING | Cash + short-dated |
 | **FX Hedge** | ✅ WORKING | Short EUR positions provide natural hedge |
+| ~~Credit Carry~~ | ⛔ DISABLED | v3.0: Replaced by Sovereign Rates Short |
+| ~~Sovereign Overlay~~ | ⛔ DISABLED | v3.0: Replaced by Sovereign Rates Short |
+
+### v3.0 Sovereign Rates Short Sleeve
+
+The new sovereign rates short sleeve hedges European fragmentation risk via BTP-Bund spread trades:
+
+| Component | Description |
+|-----------|-------------|
+| **Structure** | Short BTP futures (Italy) + Long Bund futures (Germany) |
+| **Sizing** | DV01-neutral (not notional-neutral) |
+| **Target Weight** | 12% NAV (6-20% depending on regime) |
+| **Deflation Guard** | Exits to 0% if (VIX>30 OR stress>0.75) AND rates falling |
+| **Kill-Switches** | Hard kill at 0.6% daily loss or 1.5% 10-day drawdown |
+| **Take-Profit** | 50% exit at spread z>2.5 or 120bps widening |
+
+**ETF Fallback (Paper Account):** When EUREX futures unavailable, uses EWI (Italy) / EWG (Germany) ETF proxies.
 
 ### Instrument Substitutions (PRIIPs Compliance)
 
@@ -43,53 +59,44 @@ The 60-day burn-in validates:
 
 ---
 
-## 1Password Secrets Management (Secure)
+## 1Password Secrets Management (Secure MCP Architecture)
 
-Secrets are managed via 1Password using the **`op run`** pattern. This ensures credentials are:
-- Never stored in plaintext on disk
-- Never visible to Claude or in logs
-- Injected directly into process memory at runtime
-- Purged from memory when the process exits
+Secrets are managed via a dedicated **1Password MCP server**. This ensures credentials are:
+- Never stored on trading servers (not even tokens)
+- Never visible to Claude (no SSH access to MCP server)
+- Fetched on-demand via HTTP API
+- Securely deleted from memory after use
 
-### Architecture
+### Architecture (Updated Jan 6, 2026)
 
 ```
-.env.template (contains op:// references, NOT actual secrets)
-         ↓
-op run --env-file=.env.template -- docker compose up
-         ↓
-Secrets resolved in memory → injected into container environment
-         ↓
-Secrets purged when container stops
+┌─────────────────────────────┐     ┌─────────────────────────────┐     ┌─────────────┐
+│  Trading Server             │     │  1Password-MCP Server       │     │  1Password  │
+│  (94.130.228.55 / etc.)     │────▶│  (91.99.97.249:8000)        │────▶│  Cloud      │
+│                             │     │                             │     │             │
+│  • MCP_API_KEY only         │     │  • OP_SERVICE_ACCOUNT_TOKEN │     │  • Ai Vault │
+│  • No private keys          │     │  • MCP_API_KEY validation   │     │             │
+│  • No op CLI needed         │     │  • HTTP API at /secret      │     │             │
+└─────────────────────────────┘     └─────────────────────────────┘     └─────────────┘
 ```
 
 ### Server Setup (For New Servers)
 
-#### Step 1: Install 1Password CLI
+#### Step 1: Get MCP API Key
+
+The MCP API key is stored securely. Contact the administrator to get the key.
+
+#### Step 2: Create MCP Secrets File
 
 ```bash
-# Download and install op CLI
-curl -sSfLo /tmp/op.zip "https://cache.agilebits.com/dist/1P/op2/pkg/v2.32.0/op_linux_amd64_v2.32.0.zip"
-cd /tmp && unzip -o op.zip && mv op /usr/local/bin/ && chmod +x /usr/local/bin/op
-op --version
-```
-
-#### Step 2: Configure Service Account
-
-```bash
-# Get the service account token (stored securely, not shown here)
-# Create /etc/profile.d/1password.sh with:
-echo 'export OP_SERVICE_ACCOUNT_TOKEN=<token>' > /etc/profile.d/1password.sh
-chmod 600 /etc/profile.d/1password.sh
-
-# Verify access
-source /etc/profile.d/1password.sh
-op vault list  # Should show "Ai" vault
+# Store the MCP API key (only credential needed on trading server)
+echo 'MCP_API_KEY=<your-mcp-api-key>' > /etc/abstractfinance-secrets.env
+chmod 600 /etc/abstractfinance-secrets.env
 ```
 
 #### Step 3: Create .env.template
 
-Create `/srv/abstractfinance/.env.template` with secret references:
+Create `/srv/abstractfinance/.env.template` with `op://` references (same as before):
 
 ```bash
 # Example for staging (paper trading)
@@ -99,36 +106,29 @@ IBKR_TOTP_KEY=op://Ai/ibkr.staging.totp-key/password
 IBKR_ACCOUNT_ID=DUO775682
 IBKR_PORT=4004
 TRADING_MODE=Paper Trading
-
-# Example for production (live trading)
-IBKR_USERNAME=op://Ai/InteractivebrokersClaude/username
-IBKR_PASSWORD=op://Ai/InteractivebrokersClaude/password
-IBKR_TOTP_KEY=op://Ai/InteractivebrokersClaude/2fa
-IBKR_PORT=4001
-TRADING_MODE=Live
 ```
 
-#### Step 4: Create Docker Compose Wrapper
+#### Step 4: Deploy dc-mcp Wrapper
 
-Create `/srv/abstractfinance/dc`:
+Copy the `dc-mcp` script from `scripts/dc-mcp`:
 
 ```bash
-#!/bin/bash
-# Docker Compose wrapper that injects secrets from 1Password
-set -e
-source /etc/profile.d/1password.sh
-cd /srv/abstractfinance
-exec op run --env-file=.env.template -- docker compose "$@"
+cp scripts/dc-mcp /srv/abstractfinance/dc-mcp
+chmod +x /srv/abstractfinance/dc-mcp
+ln -sf /srv/abstractfinance/dc-mcp /srv/abstractfinance/dc
 ```
 
-```bash
-chmod +x /srv/abstractfinance/dc
-```
+The wrapper:
+1. Reads `op://` references from `.env.template`
+2. Fetches each secret from MCP server via HTTP
+3. Creates a temporary `.env` file
+4. Runs docker compose
+5. Securely deletes the temp file
 
 #### Step 5: Usage
 
 ```bash
-# Start services (secrets injected at runtime)
+# Start services (secrets fetched from MCP at runtime)
 ./dc up -d ibgateway trading-engine
 
 # View logs
@@ -136,6 +136,15 @@ chmod +x /srv/abstractfinance/dc
 
 # Stop services
 ./dc down
+```
+
+#### Step 6: Add Firewall Rule
+
+The MCP server firewall must allow access from your server's IP:
+
+```bash
+# Add via Hetzner Cloud console or API
+# Port 8000 from your server IP to 91.99.97.249
 ```
 
 ### Available Secrets in "Ai" Vault

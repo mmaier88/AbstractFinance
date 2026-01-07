@@ -159,6 +159,13 @@ class RiskParityConfig:
     )
     regime_ema_alpha: float = 0.5  # 3-day EMA for smooth transitions
 
+    # v3.0: Configurable safe-haven allocation (Insurance Heavy profile)
+    # These are FIXED weights within the safe-haven budget - not subject to inverse-vol
+    safe_haven_weights: Dict[Sleeve, float] = field(default_factory=lambda: {
+        Sleeve.EUROPE_VOL_CONVEX: 0.45,   # 45% of safe budget (25/(25+30))
+        Sleeve.MONEY_MARKET: 0.55,         # 55% of safe budget (30/(25+30))
+    })
+
     @classmethod
     def from_settings(cls, settings: Dict[str, Any]) -> "RiskParityConfig":
         """Create config from settings dict."""
@@ -194,6 +201,22 @@ class RiskParityConfig:
                 except (ValueError, KeyError):
                     pass  # Skip invalid entries
 
+        # v3.0: Parse safe-haven weights from settings (Insurance Heavy profile)
+        safe_haven_weights = {
+            Sleeve.EUROPE_VOL_CONVEX: 0.45,  # Default: 45% of safe budget
+            Sleeve.MONEY_MARKET: 0.55,        # Default: 55% of safe budget
+        }
+        if 'safe_haven_weights' in rp_settings:
+            shw = rp_settings['safe_haven_weights']
+            if 'europe_vol_convex' in shw:
+                safe_haven_weights[Sleeve.EUROPE_VOL_CONVEX] = float(shw['europe_vol_convex'])
+            if 'money_market' in shw:
+                safe_haven_weights[Sleeve.MONEY_MARKET] = float(shw['money_market'])
+            # Normalize to sum to 1.0
+            total = sum(safe_haven_weights.values())
+            if total > 0:
+                safe_haven_weights = {k: v / total for k, v in safe_haven_weights.items()}
+
         return cls(
             target_vol_annual=rp_settings.get('target_vol_annual', 0.12),
             vol_floor=rp_settings.get('vol_floor', 0.06),
@@ -209,6 +232,7 @@ class RiskParityConfig:
             regime_blends=regime_blends,
             sleeve_classification=sleeve_classification,
             regime_ema_alpha=rp_settings.get('regime_ema_alpha', 0.5),
+            safe_haven_weights=safe_haven_weights,
         )
 
 
@@ -350,11 +374,9 @@ class RiskParityAllocator:
         base_normalized = {s: w / base_total for s, w in base_sleeves.items()}
 
         # FIXED weights for safe-haven sleeves - NO inverse-vol applied
+        # v3.0: Use configurable weights (Insurance Heavy = 45/55 europe_vol/money_market)
         # This preserves convex crisis behavior of insurance sleeves
-        safe_fixed_weights = {
-            Sleeve.EUROPE_VOL_CONVEX: 0.60,  # 60% of safe budget to vol hedge
-            Sleeve.MONEY_MARKET: 0.40,        # 40% of safe budget to cash
-        }
+        safe_fixed_weights = self.config.safe_haven_weights
 
         # Apply regime blend to buckets
         base_budget = regime_blend["base"]

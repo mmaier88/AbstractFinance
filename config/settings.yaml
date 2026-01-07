@@ -125,16 +125,16 @@ execution:
   max_data_age_seconds: 30                # Reject orders if data older than this
 
 # Sleeve Allocations (risk weights)
-# PORTFOLIO SIMPLIFICATION v2.2: Removed negative contributors
-# - REMOVED single_name: -0.334 marginal Sharpe, -82% max DD
-# - REMOVED crisis_alpha: Merged into europe_vol_convex (overlapping instruments)
-# - REDUCED credit_carry: Low contribution (+0.023), negative insurance
+# v3.0 INSURANCE HEAVY: Based on 20-year backtest sanity checks
+# - Sharpe: 0.77 → 0.95 (+23%)
+# - Max DD: -10.5% → -8.1% (+23%)
+# - Insurance Score: 12.3% → 15.7% (+28%)
 sleeves:
-  core_index_rv: 0.20            # Core US vs EU index spread
-  sector_rv: 0.20                # Sector relative value (factor-neutral)
-  europe_vol_convex: 0.18        # VSTOXX calls + SX5E put spreads (primary insurance)
-  credit_carry: 0.08             # Credit & carry (NORMAL regime only)
-  money_market: 0.34             # Short-term money funds (not idle cash)
+  core_index_rv: 0.15            # Reduced: alpha sleeve, not insurance
+  sector_rv: 0.15                # Reduced: alpha sleeve, not insurance
+  europe_vol_convex: 0.25        # INCREASED: primary insurance channel
+  credit_carry: 0.00             # DISABLED v3.0: replaced by sovereign_rates_short
+  money_market: 0.30             # Reduced but >= 30% for margin safety
 
 # =============================================================================
 # STRATEGY EVOLUTION: Trend Filter for Core RV
@@ -678,15 +678,22 @@ risk_parity:
     europe_vol_convex: safe           # Vol hedges - increase in crisis
     money_market: safe                # Cash - increase in crisis
 
+  # v3.0: Safe-haven allocation within safe budget (Insurance Heavy profile)
+  # These are FIXED weights - NOT subject to inverse-vol scaling
+  # This preserves convex crisis behavior of insurance sleeves
+  safe_haven_weights:
+    europe_vol_convex: 0.45           # 45% of safe budget (25/(25+30))
+    money_market: 0.55                # 55% of safe budget (30/(25+30))
+
 # ============================================================================
-# SOVEREIGN CRISIS OVERLAY (Phase 2)
-# Put spreads on periphery sovereign exposure using US-listed proxies
+# SOVEREIGN CRISIS OVERLAY (v3.0 - DISABLED)
+# Replaced by sovereign_rates_short for direct fragmentation hedge
 # ============================================================================
 sovereign_overlay:
-  enabled: true
-  annual_budget_pct: 0.0035           # 35bps annual budget (0.35% of NAV)
-  min_budget_pct: 0.0025              # 25bps minimum
-  max_budget_pct: 0.0050              # 50bps maximum
+  enabled: false                      # v3.0: Replaced by sovereign_rates_short
+  annual_budget_pct: 0.00             # No budget
+  min_budget_pct: 0.00
+  max_budget_pct: 0.00
 
   # Stress detection thresholds (based on ETF drawdown from high)
   stress_threshold_elevated: 0.25     # 25% drawdown = ELEVATED
@@ -738,31 +745,130 @@ hedge_ladder:
   secondary_underlying: "EWG"         # Europe exposure proxy
 
 # ============================================================================
-# CREDIT SLEEVE (v2.4 Defensive Mode)
-# Regime-gated, IG/floating only (no HY/BDC)
+# CREDIT SLEEVE (v3.0 - DISABLED)
+# Replaced by sovereign_rates_short for better fragmentation hedge
 # ============================================================================
 credit_sleeve:
-  enabled: true
-  max_allocation_pct: 0.05            # 5% max (down from 8%)
+  enabled: false                      # v3.0: Replaced by sovereign_rates_short
+  max_allocation_pct: 0.00            # No credit allocation
 
-  # Regime caps - credit exposure reduces with stress
+  # Regime caps - all zero now
   regime_caps:
-    normal: 0.05                      # 5% in normal conditions
-    elevated: 0.02                    # 2% when elevated
-    crisis: 0.00                      # 0% in crisis (full exit)
+    normal: 0.00
+    elevated: 0.00
+    crisis: 0.00
 
-  # Allowed instruments (IG and floating rate only)
-  allowed_instruments:
-    - lqde                            # iShares IG Corp (LQDE)
-    - flot                            # iShares Floating Rate (FLOT)
+  # Allowed instruments (kept for reference)
+  allowed_instruments: []
 
-  # Removed instruments (v2.4 - too correlated with equity drawdowns)
-  # - ihyu                            # High Yield - removed
-  # - arcc                            # BDC - removed
+  # Unwind settings
+  unwind_days: 5
+  unwind_start_date: null
 
-  # Unwind settings for removed instruments
-  unwind_days: 5                      # Gradual unwind over 5 days
-  unwind_start_date: null             # Set to date to begin unwind
+# ============================================================================
+# EU SOVEREIGN FRAGILITY SHORT (v3.0)
+# DV01-neutral BTP-Bund spread trade for fragmentation hedge
+# Replaces credit_carry and sovereign_overlay sleeves
+# ============================================================================
+sovereign_rates_short:
+  enabled: true
+  target_weight_pct: 0.14             # 14% NAV target (Insurance Heavy)
+
+  # Regime-based weights (Insurance Heavy - increased)
+  base_weights:
+    normal: 0.10                      # 10% base in normal (was 6%)
+    elevated: 0.14                    # 14% base when elevated (was 12%)
+    crisis: 0.18                      # 18% base in crisis (was 16%)
+
+  max_weights:
+    normal: 0.12                      # 12% max in normal
+    elevated: 0.16                    # 16% max when elevated
+    crisis: 0.20                      # 20% max in crisis
+
+  # DV01 budget: 7 bps of NAV per 100bp move
+  dv01_budget_per_nav: 0.0007
+
+  # Instruments (EUREX bond futures)
+  instruments:
+    btp: "FBTP"                       # Short leg - Italy 10Y
+    bund: "FGBL"                      # Long leg - Germany 10Y
+    oat: "FOAT"                       # Optional - France 10Y
+
+  # ETF fallback if futures unavailable
+  use_etf_fallback: true
+  etf_fallback:
+    btp_proxy: "EWI"                  # iShares Italy ETF
+    bund_proxy: "EWG"                 # iShares Germany ETF
+
+  # Signal lookback periods
+  signals:
+    spread_z_lookback_days: 252       # 1-year z-score
+    spread_mom_lookback_days: 20      # 20-day momentum
+    bund_yield_mom_lookback_days: 60  # 60-day Bund yield change
+
+  # Fragmentation multiplier thresholds (based on spread z-score)
+  frag_mult_thresholds:
+    z_low: 0.0                        # Below = 0.5x sizing
+    z_mid: 1.0                        # 0-1 = 1.0x sizing
+    z_high: 2.0                       # 1-2 = 1.3x, 2+ = 1.6x sizing
+
+  # Rates-up confirmation multiplier (bps)
+  rates_up_mult_thresholds:
+    low_bps: 10                       # Below = 0.8x sizing
+    high_bps: 40                      # Above = 1.2x sizing
+
+  # ============================================================================
+  # DEFLATION SCALER (v3.0 - replaces binary kill-switch)
+  # 3-tier continuous scaler, NOT binary kill
+  # IMPORTANT: Bypassed if spread_z >= 0.5 (fragmentation present)
+  # ============================================================================
+  deflation_scaler:
+    # If fragmentation is present, NO deflation guard applies
+    fragmentation_bypass_spread_z: 0.5   # spread_z >= 0.5 = keep full position
+
+    # Tier 0: Normal (scaler = 1.0)
+    # No conditions met
+
+    # Tier 1: Reduce (scaler = 0.5)
+    tier1:
+      vix_threshold: 35               # VIX >= 35
+      bund_yield_5d_drop_bps: -30     # Bund yield drops 30bps in 5d
+
+    # Tier 2: Strong Reduce (scaler = 0.25)
+    tier2:
+      vix_threshold: 45               # VIX >= 45
+      bund_yield_5d_drop_bps: -40     # Bund yield drops 40bps in 5d
+
+    # Tier 3: Emergency Flatten (scaler = 0.0) - RARE
+    tier3:
+      vix_threshold: 55               # VIX >= 55
+      bund_yield_5d_drop_bps: -60     # Bund yield drops 60bps in 5d
+
+  # Kill switches (hard kill still exists for extreme loss)
+  kill_switches:
+    # Hard kill triggers (flatten immediately) - unchanged
+    hard_kill_daily_loss_pct: 0.006   # 0.6% NAV daily loss
+    hard_kill_10d_drawdown_pct: 0.015 # 1.5% NAV 10-day drawdown
+
+    # Soft kill removed - replaced by deflation_scaler above
+    # soft_kill_spread_z: -0.5        # REMOVED: now handled by deflation_scaler
+    # soft_kill_bund_yield_mom_20d_bps: -20  # REMOVED
+
+    # Re-enable after N days
+    reenable_days: 5
+
+  # Take-profit rules
+  take_profit:
+    spread_z_threshold: 2.5           # Take profit at z >= 2.5
+    spread_widening_bps: 120          # Or spread widens 120bps from entry
+    profit_take_pct: 0.50             # Take 50% of position
+    recycle_wait_days: 3              # Wait 3 days before re-maxing
+
+  # DV01 per contract (calibrated monthly)
+  dv01_per_contract:
+    FGBL: 80.0                        # Euro-Bund ~80 EUR per contract
+    FBTP: 78.0                        # BTP ~78 EUR per contract
+    FOAT: 79.0                        # OAT ~79 EUR per contract
 
 # ============================================================================
 # STRATEGY INTEGRATION (Phase 3 + v2.4)

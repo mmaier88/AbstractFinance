@@ -1711,5 +1711,402 @@ All phases complete when:
 
 ---
 
+---
+
+## Phase T: EU Sovereign Fragility Short Sleeve (v3.0)
+
+**Date:** January 7, 2026
+
+**Goal:** Replace credit_carry + sovereign_overlay with a significant rates fragmentation hedge using BTP-Bund spread trades. The sleeve (a) improves crisis insurance in inflation/policy-error/fragmentation regimes (e.g., 2022), (b) has controlled drawdown in deflationary risk-off (e.g., 2008/2020), and (c) is systematic + explainable.
+
+**Philosophy:** This is the cornerstone insurance mechanism for European fragmentation risk - when EU periphery spreads widen (Italy vs Germany), this sleeve profits. Critical design: DV01-neutral spread trade isolates fragmentation risk, not a pure "rates up" bet.
+
+---
+
+### T.1: Core Instruments (Priority: CRITICAL)
+
+**Primary Trade Structure:**
+- **Short BTP futures (FBTP)** - Italy 10-year government bond futures (EUREX)
+- **Long Bund futures (FGBL)** - Germany 10-year government bond futures (EUREX)
+
+This isolates fragmentation risk (spreads widening) and avoids a pure "rates up" bet.
+
+**Secondary (Optional):**
+- **Short OAT futures (FOAT)** - France 10-year government bond futures
+- **Long Bund futures (FGBL)**
+Only add if clean liquidity + execution available.
+
+**Fallback (if futures unavailable):**
+- Use ETF proxies: Short EWI (Italy), Long EWG (Germany)
+- Maintain same DV01-neutral spread logic
+
+**IBKR Contract Specs:**
+
+| Symbol | Exchange | Description | Point Value |
+|--------|----------|-------------|-------------|
+| FGBL | EUREX | Euro-Bund (German 10Y) | €1,000/point |
+| FBTP | EUREX | BTP (Italian 10Y) | €1,000/point |
+| FOAT | EUREX | OAT (French 10Y) | €1,000/point |
+
+---
+
+### T.2: Sleeve Allocation & Risk Budget (Priority: CRITICAL)
+
+**Replace Existing Sleeves:**
+```yaml
+# OLD (v2.4)
+credit_carry: 0.08      # -> 0.00
+sovereign_overlay: 0.0035  # -> 0.00
+
+# NEW (v3.0)
+sovereign_rates_short: 0.12  # 12% NAV target weight
+```
+
+**Why 12%:** "Significant" enough to matter in 2011/2022-type events, but not so large that a deflationary bond rally can dominate portfolio drawdown.
+
+**Hard Caps by Regime:**
+
+| Regime | Min Weight | Base Weight | Max Weight |
+|--------|------------|-------------|------------|
+| NORMAL | 0.00 | 0.06 (6%) | 0.10 (10%) |
+| ELEVATED | 0.00 | 0.12 (12%) | 0.16 (16%) |
+| CRISIS | 0.00 | 0.16 (16%) | 0.20 (20%) |
+
+---
+
+### T.3: Signal Logic (Priority: CRITICAL)
+
+**Daily Features to Compute:**
+
+**A) Fragmentation Signal (Core):**
+```python
+spread = BTP_10Y_yield - Bund_10Y_yield  # or futures implied
+spread_z = zscore(spread, lookback=252)
+spread_mom = spread_change_20d  # bps
+```
+
+**B) Rates-Up Signal (Stagflation/Policy Error):**
+```python
+bund_yield_mom_60d  # bps change in Bund yield
+# Optional: inflation_proxy (EU CPI trend or breakeven)
+```
+
+**C) Deflation Shock Guard (DO-NOT-SHORT Condition):**
+```python
+risk_off = (VIX > 30) OR (stress_score > 0.75)
+rates_down_shock = (bund_yield_change_5d < -30bps) OR (bund_yield_mom_20d < -40bps)
+deflation_guard = risk_off AND rates_down_shock
+```
+
+**Intuition:** In COVID-style panics, VIX is high and Bund yields collapse. That's when shorts lose.
+
+---
+
+### T.4: Deterministic Sizing Rule (Priority: CRITICAL)
+
+Size by two components:
+1. **Fragmentation intensity** (spreads widening → size up)
+2. **Deflation guard** (panic + yields collapsing → size down to zero)
+
+**Base Weight by Regime:**
+| Regime | Base Weight |
+|--------|-------------|
+| NORMAL | 0.06 |
+| ELEVATED | 0.12 |
+| CRISIS | 0.16 |
+
+**Fragmentation Multiplier:**
+```python
+frag_mult = (
+    0.5 if spread_z < 0.0 else
+    1.0 if 0.0 <= spread_z < 1.0 else
+    1.3 if 1.0 <= spread_z < 2.0 else
+    1.6  # spread_z >= 2.0
+)
+```
+
+**Rates-Up Confirmation Multiplier:**
+```python
+rates_up_mult = (
+    0.8 if bund_yield_mom_60d < +10bps else
+    1.0 if +10bps <= bund_yield_mom_60d < +40bps else
+    1.2  # bund_yield_mom_60d >= +40bps
+)
+```
+
+**Final Target Weight:**
+```python
+if deflation_guard:
+    target_w = 0.0  # HARD KILL
+else:
+    target_w = clamp(
+        base_w * frag_mult * rates_up_mult,
+        0.0,
+        max_w_by_regime[regime]
+    )
+```
+
+---
+
+### T.5: DV01-Neutral Position Construction (Priority: CRITICAL)
+
+**DO NOT size by notional; size by DV01 (1bp value change).**
+
+DV01-neutral makes you primarily short spread widening, not just "rates up".
+
+**DV01 Budget:**
+```python
+dv01_budget_per_1.0_nav = 0.0007  # 7 bps of NAV per 100bp move
+target_dv01 = target_w * NAV * dv01_budget_per_1.0_nav
+```
+
+**Contract Calculation:**
+```python
+# Get DV01 per futures contract (calibrated monthly)
+dv01_btp = DV01_per_1_BTP_contract  # ~€75-85 per contract
+dv01_bund = DV01_per_1_Bund_contract  # ~€80-90 per contract
+
+# Compute contracts
+btp_contracts = round(target_dv01 / dv01_btp)
+bund_contracts = round((btp_contracts * dv01_btp) / dv01_bund)
+
+# Positions:
+# SHORT btp_contracts FBTP
+# LONG bund_contracts FGBL
+```
+
+**Implementation Note:** DV01 per contract approximated using:
+- CTD bond modified duration × futures conversion factor × price
+- Or static calibrated value updated monthly
+
+---
+
+### T.6: Kill-Switches (Priority: CRITICAL)
+
+**Hard Kill (Must Flatten Immediately):**
+
+Trigger if ANY:
+1. `deflation_guard == true` (defined above)
+2. `daily_loss_from_sleeve > 0.60% NAV` (one-day shock)
+3. `NAV drawdown attributable to sleeve > 1.50% NAV` (rolling 10d)
+
+**Action:**
+- Set target weight to 0
+- Close spread position with marketable limits
+- Log event with full diagnostics
+
+**Soft Kill (Reduce Exposure by 50%):**
+
+Trigger if ANY:
+- `spread_z < -0.5` (spreads compressing strongly)
+- `bund_yield_mom_20d < -20bps` (rates rally underway)
+
+**Action:**
+- `target_w = target_w * 0.5`
+
+**Re-Enable Rules:**
+
+Only re-enable from 0 if ALL:
+- `deflation_guard == false` for 5 consecutive trading days
+- `spread_z >= 0.0` OR regime is ELEVATED/CRISIS
+
+---
+
+### T.7: Take-Profit / Monetization Rules (Priority: HIGH)
+
+**Take Profit:**
+
+If EITHER:
+- `spread_z >= 2.5`, OR
+- Spread widens by >= 120bps from entry average
+
+**Action:**
+- Take profit on 50% of position (halve contracts)
+- Keep other 50% as runner unless hard kill triggers
+
+**Reset / Recycle:**
+
+After taking profit:
+- Wait 3 trading days
+- Re-evaluate target weight (don't instantly re-max)
+
+---
+
+### T.8: Engine Implementation (Priority: CRITICAL)
+
+**Files to Create/Modify:**
+
+| File | Change |
+|------|--------|
+| `config/settings.yaml` | Add `sovereign_rates_short` config |
+| `src/sovereign_rates_short.py` | NEW - Main engine (signals, sizing, DV01) |
+| `src/strategy_logic.py` | Include new sleeve, tag as INSURANCE |
+| `src/risk_parity.py` | Exclude from RP sizing (insurance sleeve) |
+| `src/risk_engine.py` | Sleeve-level drawdown tracking, kill triggers |
+| `config/instruments.yaml` | Add FGBL, FBTP, FOAT contracts |
+
+**Execution Requirements:**
+- Paired order placement (BTP leg + Bund leg)
+- If one leg fills and other doesn't within 30 seconds:
+  - Hedge with temporary offset, OR
+  - Cancel/replace to avoid directional rates exposure
+
+---
+
+### T.9: Configuration (settings.yaml)
+
+```yaml
+# ============================================================================
+# EU SOVEREIGN FRAGILITY SHORT (v3.0)
+# DV01-neutral BTP-Bund spread trade for fragmentation hedge
+# ============================================================================
+sovereign_rates_short:
+  enabled: true
+  target_weight_pct: 0.12           # 12% NAV target
+
+  # Regime-based weights
+  base_weights:
+    normal: 0.06
+    elevated: 0.12
+    crisis: 0.16
+
+  max_weights:
+    normal: 0.10
+    elevated: 0.16
+    crisis: 0.20
+
+  # DV01 budget
+  dv01_budget_per_nav: 0.0007       # 7 bps of NAV per 100bp move
+
+  # Instruments
+  instruments:
+    btp: "FBTP"                     # Short leg (Italy)
+    bund: "FGBL"                    # Long leg (Germany)
+    oat: "FOAT"                     # Optional secondary (France)
+
+  # Signal thresholds
+  signals:
+    spread_z_lookback_days: 252
+    spread_mom_lookback_days: 20
+    bund_yield_mom_lookback_days: 60
+
+  # Multiplier thresholds
+  frag_mult_thresholds:
+    z_low: 0.0                      # Below = 0.5x
+    z_mid: 1.0                      # 0-1 = 1.0x
+    z_high: 2.0                     # 1-2 = 1.3x, 2+ = 1.6x
+
+  rates_up_mult_thresholds:
+    low_bps: 10                     # Below = 0.8x
+    high_bps: 40                    # Above = 1.2x
+
+  # Deflation guard
+  deflation_guard:
+    vix_threshold: 30
+    stress_score_threshold: 0.75
+    bund_yield_5d_drop_bps: -30
+    bund_yield_20d_drop_bps: -40
+
+  # Kill switches
+  kill_switches:
+    hard_kill_daily_loss_pct: 0.006   # 0.6% NAV
+    hard_kill_10d_drawdown_pct: 0.015 # 1.5% NAV
+    soft_kill_spread_z: -0.5
+    soft_kill_bund_yield_mom_20d_bps: -20
+    reenable_days: 5
+
+  # Take profit
+  take_profit:
+    spread_z_threshold: 2.5
+    spread_widening_bps: 120
+    profit_take_pct: 0.50           # Take 50%
+    recycle_wait_days: 3
+
+  # DV01 calibration (updated monthly)
+  dv01_per_contract:
+    FGBL: 80.0                      # €80 per contract (approximate)
+    FBTP: 78.0                      # €78 per contract (approximate)
+    FOAT: 79.0                      # €79 per contract (approximate)
+
+# Disable replaced sleeves
+credit_carry:
+  enabled: false                    # Replaced by sovereign_rates_short
+  max_allocation_pct: 0.00
+
+sovereign_overlay:
+  enabled: false                    # Replaced by sovereign_rates_short
+```
+
+---
+
+### T.10: Acceptance Criteria
+
+**Backtest Must Show:**
+- [ ] Higher "insurance score" in 2011 + 2022 vs baseline v2.4
+- [ ] No meaningful degradation in 2020 crisis (deflation guard prevents losses)
+- [ ] Beta vs 60/40 stays low (portfolio remains diversifier)
+- [ ] Sharpe improves from removing credit carry tail losses
+
+**Live Safety Must Show:**
+- [ ] Sleeve can be hard-killed deterministically
+- [ ] DV01-neutrality logged daily: `btp_contracts, bund_contracts, dv01_btp, dv01_bund, net_dv01`
+- [ ] Kill-switch triggers within same trading session
+
+---
+
+### Execution Order
+
+| Order | Component | Priority | Dependency | Effort |
+|-------|-----------|----------|------------|--------|
+| 1 | **T.1: Instruments** | CRITICAL | None | 0.5 days |
+| 2 | **T.9: Configuration** | CRITICAL | None | 0.5 days |
+| 3 | **T.3-T.4: Signal + Sizing** | CRITICAL | T.9 | 1 day |
+| 4 | **T.5: DV01 Construction** | CRITICAL | T.3 | 1 day |
+| 5 | **T.6: Kill-Switches** | CRITICAL | T.4 | 1 day |
+| 6 | **T.7: Take-Profit** | HIGH | T.5 | 0.5 days |
+| 7 | **T.8: Integration** | CRITICAL | T.3-T.7 | 1 day |
+| 8 | **T.10: Testing** | HIGH | T.8 | 1 day |
+
+**Recommended Timeline:**
+- Day 1: T.1 + T.9 (instruments + config)
+- Day 2: T.3 + T.4 (signals + sizing)
+- Day 3: T.5 + T.6 (DV01 + kill-switches)
+- Day 4: T.7 + T.8 (take-profit + integration)
+- Day 5: T.10 (testing + validation)
+- Day 6+: Staging deployment + monitoring
+
+---
+
+### Risk Considerations
+
+| Risk | Mitigation |
+|------|------------|
+| EUREX futures not in paper account | ETF proxy fallback (EWI/EWG) |
+| Deflationary panic (2020-style) | Deflation guard = 0% exposure |
+| Spread compression rally | Soft kill at spread_z < -0.5 |
+| Single-day gap risk | Daily loss kill at 0.6% NAV |
+| Cumulative bleed | 10-day drawdown kill at 1.5% NAV |
+| DV01 mismatch | Monthly recalibration, log daily |
+| Legging risk | 30s timeout, hedge or cancel |
+
+---
+
+### LP-Safe Explanation
+
+> **Why the Bond-Short Sleeve?**
+>
+> This sleeve hedges fragmentation and inflation/policy-error regimes - scenarios where European peripheral spreads widen against core (Germany). It's NOT meant for deflationary panics where bonds rally; guardrails (deflation guard) completely exit in those environments.
+>
+> The position is DV01-neutral: short Italian BTP futures, long German Bund futures. This isolates the spread widening, not a pure rates bet. When Italy's borrowing costs rise faster than Germany's (fragmentation), the sleeve profits.
+>
+> Budget: 12% of NAV target, with hard caps preventing excessive exposure. Kill-switches ensure losses are bounded.
+
+---
+
+*Phase T added: 2026-01-07*
+*Status: PLANNED*
+
+---
+
 *Document created: 2025-12-16*
-*Last updated: 2026-01-05*
+*Last updated: 2026-01-07*

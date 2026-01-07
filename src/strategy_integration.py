@@ -29,6 +29,16 @@ from .tail_hedge import TailHedgeManager
 from .hedge_ladder import (
     HedgeLadderEngine, HedgeLadderConfig, HedgeBucket
 )
+
+# v3.0: EU Sovereign Fragility Short
+try:
+    from .sovereign_rates_short import (
+        SovereignRatesShortEngine, SovereignRatesShortConfig,
+        FragmentationSignal, create_sovereign_rates_short_engine
+    )
+    SOVEREIGN_RATES_SHORT_AVAILABLE = True
+except ImportError:
+    SOVEREIGN_RATES_SHORT_AVAILABLE = False
 from .data_feeds import DataFeed
 from .fx_rates import FXRates, get_fx_rates
 
@@ -42,13 +52,16 @@ class IntegratedStrategyConfig:
     use_risk_parity: bool = True
     risk_parity_weight: float = 0.7  # Blend with existing weights
 
-    # Sovereign overlay settings
-    use_sovereign_overlay: bool = True
-    sovereign_budget_pct: float = 0.0035  # 35bps
+    # Sovereign overlay settings (v3.0: disabled, replaced by sovereign_rates_short)
+    use_sovereign_overlay: bool = False
+    sovereign_budget_pct: float = 0.00  # Disabled
 
     # v2.4: Hedge ladder settings
     use_hedge_ladder: bool = True
     hedge_ladder_budget_pct: float = 0.004  # 40bps
+
+    # v3.0: EU Sovereign Fragility Short settings
+    use_sovereign_rates_short: bool = True  # Replaces sovereign_overlay
 
     # Constraints
     max_single_country_pct: float = 0.15  # Max 15% per country
@@ -63,13 +76,22 @@ class IntegratedStrategyConfig:
         """Create config from settings dict."""
         int_settings = settings.get('strategy_integration', {})
 
+        # v3.0: Check if sovereign_rates_short is enabled in settings
+        srs_settings = settings.get('sovereign_rates_short', {})
+        use_srs = srs_settings.get('enabled', True)
+
+        # v3.0: Disable sovereign_overlay if sovereign_rates_short is enabled
+        overlay_settings = settings.get('sovereign_overlay', {})
+        use_overlay = overlay_settings.get('enabled', False) and not use_srs
+
         return cls(
             use_risk_parity=int_settings.get('use_risk_parity', True),
             risk_parity_weight=int_settings.get('risk_parity_weight', 0.7),
-            use_sovereign_overlay=int_settings.get('use_sovereign_overlay', True),
-            sovereign_budget_pct=int_settings.get('sovereign_budget_pct', 0.0035),
+            use_sovereign_overlay=use_overlay,
+            sovereign_budget_pct=int_settings.get('sovereign_budget_pct', 0.00),
             use_hedge_ladder=int_settings.get('use_hedge_ladder', True),
             hedge_ladder_budget_pct=int_settings.get('hedge_ladder_budget_pct', 0.004),
+            use_sovereign_rates_short=use_srs,
             max_single_country_pct=int_settings.get('max_single_country_pct', 0.15),
             max_hedge_budget_pct=int_settings.get('max_hedge_budget_pct', 0.05),
             max_gross_leverage=int_settings.get('max_gross_leverage', 2.0),
@@ -87,11 +109,14 @@ class IntegratedStrategyOutput:
     risk_parity_weights: Optional[RiskParityWeights]
     final_sleeve_weights: Dict[Sleeve, float]
 
-    # Sovereign overlay orders
+    # Sovereign overlay orders (legacy, v3.0: disabled)
     sovereign_orders: List[OrderSpec]
 
     # v2.4: Hedge ladder orders
     hedge_ladder_orders: List[OrderSpec] = field(default_factory=list)
+
+    # v3.0: EU Sovereign Fragility Short orders
+    sovereign_rates_short_orders: List[OrderSpec] = field(default_factory=list)
 
     # Combined orders
     all_orders: List[OrderSpec] = field(default_factory=list)
@@ -113,6 +138,7 @@ class IntegratedStrategyOutput:
             "order_count": len(self.all_orders),
             "sovereign_order_count": len(self.sovereign_orders),
             "hedge_ladder_order_count": len(self.hedge_ladder_orders),
+            "sovereign_rates_short_order_count": len(self.sovereign_rates_short_orders),
             "constraints": self.constraints_applied,
             "timestamp": self.timestamp.isoformat(),
         }
@@ -181,6 +207,12 @@ class IntegratedStrategy:
             ladder_config = HedgeLadderConfig.from_settings(settings)
             ladder_config.annual_budget_pct = self.config.hedge_ladder_budget_pct
             self.hedge_ladder = HedgeLadderEngine(ladder_config)
+
+        # v3.0: EU Sovereign Fragility Short
+        self.sovereign_rates_short: Optional['SovereignRatesShortEngine'] = None
+        if self.config.use_sovereign_rates_short and SOVEREIGN_RATES_SHORT_AVAILABLE:
+            self.sovereign_rates_short = create_sovereign_rates_short_engine(settings)
+            logger.info("Sovereign rates short engine initialized")
 
         # Tail hedge manager (passed or created)
         self.tail_hedge_manager = tail_hedge_manager or TailHedgeManager(
@@ -302,10 +334,58 @@ class IntegratedStrategy:
             except Exception as e:
                 logger.warning(f"Hedge ladder computation failed: {e}")
 
+        # Step 5c (v3.0): Generate EU Sovereign Fragility Short orders
+        sovereign_rates_short_orders = []
+        if self.sovereign_rates_short and self.config.use_sovereign_rates_short:
+            try:
+                # Get required market data for fragmentation signal
+                vix_level = data_feed.get_last_price("vix_index") or 15.0
+                stress_score = risk_decision.scaling_diagnostics.get('stress_score', 0.0) \
+                    if risk_decision.scaling_diagnostics else 0.0
+
+                # Get yield data (if available) or use defaults
+                # In production, these would come from a bond data feed
+                btp_yield = data_feed.get_last_price("btp_10y_yield") or 4.0
+                bund_yield = data_feed.get_last_price("bund_10y_yield") or 2.5
+
+                # Compute fragmentation signal
+                signal = self.sovereign_rates_short.compute_fragmentation_signal(
+                    btp_yield=btp_yield,
+                    bund_yield=bund_yield,
+                    vix_level=vix_level,
+                    stress_score=stress_score,
+                    as_of=today
+                )
+
+                # Convert risk regime for the engine
+                from .risk_engine import RiskRegime as RReg
+                srs_regime = RReg(risk_decision.regime.value)
+
+                # Check if futures are available (use ETF fallback in paper account)
+                use_etf_fallback = True  # TODO: Check IBKR permissions for EUREX futures
+
+                # Generate orders
+                sovereign_rates_short_orders = self.sovereign_rates_short.generate_orders(
+                    portfolio_state=portfolio,
+                    signal=signal,
+                    regime=srs_regime,
+                    use_etf_fallback=use_etf_fallback,
+                    today=today
+                )
+
+                logger.info(
+                    f"Sovereign rates short: {len(sovereign_rates_short_orders)} orders, "
+                    f"spread_z={signal.spread_z:.2f}, deflation_guard={signal.deflation_guard}, "
+                    f"VIX={vix_level:.1f}"
+                )
+            except Exception as e:
+                logger.warning(f"Sovereign rates short computation failed: {e}")
+
         # Step 6: Combine all orders
         all_orders = list(base_output.orders)
         all_orders.extend(sovereign_orders)
         all_orders.extend(hedge_ladder_orders)
+        all_orders.extend(sovereign_rates_short_orders)
 
         # Step 7: Apply order-level constraints
         all_orders, order_constraints = self._apply_order_constraints(
@@ -316,7 +396,8 @@ class IntegratedStrategy:
         # Step 8: Build commentary
         commentary = self._build_commentary(
             base_output, rp_weights, final_weights, sovereign_orders,
-            hedge_ladder_orders, constraints_applied, risk_decision
+            hedge_ladder_orders, constraints_applied, risk_decision,
+            sovereign_rates_short_orders
         )
 
         output = IntegratedStrategyOutput(
@@ -325,6 +406,7 @@ class IntegratedStrategy:
             final_sleeve_weights=final_weights,
             sovereign_orders=sovereign_orders,
             hedge_ladder_orders=hedge_ladder_orders,
+            sovereign_rates_short_orders=sovereign_rates_short_orders,
             all_orders=all_orders,
             constraints_applied=constraints_applied,
             commentary=commentary
@@ -527,9 +609,12 @@ class IntegratedStrategy:
         sovereign_orders: List[OrderSpec],
         hedge_ladder_orders: List[OrderSpec],
         constraints: List[str],
-        risk_decision: RiskDecision
+        risk_decision: RiskDecision,
+        sovereign_rates_short_orders: Optional[List[OrderSpec]] = None
     ) -> str:
         """Build comprehensive strategy commentary."""
+        sovereign_rates_short_orders = sovereign_rates_short_orders or []
+
         lines = [
             f"=== Integrated Strategy Update - {datetime.now().strftime('%Y-%m-%d %H:%M')} ===",
             "",
@@ -570,6 +655,23 @@ class IntegratedStrategy:
             for order in hedge_ladder_orders[:5]:  # First 5
                 lines.append(f"  {order.side} {order.quantity} {order.instrument_id}")
 
+        if sovereign_rates_short_orders:
+            lines.extend([
+                "",
+                f"Sovereign Rates Short: {len(sovereign_rates_short_orders)} orders",
+            ])
+            for order in sovereign_rates_short_orders[:5]:  # First 5
+                lines.append(f"  {order.side} {order.quantity} {order.instrument_id}")
+
+            # Add engine state if available
+            if self.sovereign_rates_short:
+                srs_summary = self.sovereign_rates_short.get_summary()
+                if srs_summary.get('last_signal'):
+                    lines.append(f"  Spread Z: {srs_summary['last_signal'].get('spread_z', 'N/A')}")
+                    lines.append(f"  Deflation Guard: {srs_summary['last_signal'].get('deflation_guard', 'N/A')}")
+                if srs_summary.get('last_sizing'):
+                    lines.append(f"  Target Weight: {srs_summary['last_sizing'].get('target_weight', 0):.1%}")
+
         if constraints:
             lines.extend([
                 "",
@@ -598,12 +700,14 @@ class IntegratedStrategy:
                 "sovereign_budget_pct": self.config.sovereign_budget_pct,
                 "use_hedge_ladder": self.config.use_hedge_ladder,
                 "hedge_ladder_budget_pct": self.config.hedge_ladder_budget_pct,
+                "use_sovereign_rates_short": self.config.use_sovereign_rates_short,
                 "max_gross_leverage": self.config.max_gross_leverage,
                 "blend_mode": self.config.blend_mode,
             },
             "risk_parity": self.risk_parity.get_summary() if self.risk_parity else None,
             "sovereign_overlay": self.sovereign_overlay.get_summary() if self.sovereign_overlay else None,
             "hedge_ladder": self.hedge_ladder.get_summary() if self.hedge_ladder else None,
+            "sovereign_rates_short": self.sovereign_rates_short.get_summary() if self.sovereign_rates_short else None,
             "last_output": self._last_output.to_dict() if self._last_output else None,
         }
         return summary

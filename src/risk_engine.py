@@ -1085,3 +1085,185 @@ class RiskEngine:
         }
 
         return limits.get(instrument_type, limits["ETF"])
+
+    # =========================================================================
+    # v3.0: Sleeve-Level Kill-Switch Support
+    # For sovereign_rates_short and other sleeves that need per-sleeve risk limits
+    # =========================================================================
+
+    def check_sleeve_kill_switch(
+        self,
+        sleeve_name: str,
+        daily_pnl: float,
+        rolling_10d_pnl: float,
+        nav: float,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, bool, str]:
+        """
+        Check kill-switch conditions for a specific sleeve.
+
+        v3.0: Supports hard and soft kill-switches for individual sleeves.
+
+        Args:
+            sleeve_name: Name of the sleeve (e.g., "sovereign_rates_short")
+            daily_pnl: Today's P&L for this sleeve
+            rolling_10d_pnl: Rolling 10-day P&L for this sleeve
+            nav: Current portfolio NAV
+            config: Optional sleeve-specific config with thresholds
+
+        Returns:
+            Tuple of (hard_kill, soft_kill, reason)
+        """
+        config = config or {}
+
+        # Default thresholds (can be overridden by config)
+        hard_kill_daily_loss_pct = config.get('hard_kill_daily_loss_pct', 0.006)  # 0.6%
+        hard_kill_10d_drawdown_pct = config.get('hard_kill_10d_drawdown_pct', 0.015)  # 1.5%
+        soft_kill_threshold_pct = config.get('soft_kill_threshold_pct', 0.003)  # 0.3%
+
+        if nav <= 0:
+            return False, False, "Invalid NAV"
+
+        # Calculate loss percentages
+        daily_loss_pct = -daily_pnl / nav if daily_pnl < 0 else 0.0
+        rolling_loss_pct = -rolling_10d_pnl / nav if rolling_10d_pnl < 0 else 0.0
+
+        # Hard kill: daily loss exceeds threshold
+        if daily_loss_pct > hard_kill_daily_loss_pct:
+            return True, False, (
+                f"HARD KILL [{sleeve_name}]: Daily loss {daily_loss_pct:.2%} > "
+                f"{hard_kill_daily_loss_pct:.2%} threshold"
+            )
+
+        # Hard kill: 10-day drawdown exceeds threshold
+        if rolling_loss_pct > hard_kill_10d_drawdown_pct:
+            return True, False, (
+                f"HARD KILL [{sleeve_name}]: 10-day drawdown {rolling_loss_pct:.2%} > "
+                f"{hard_kill_10d_drawdown_pct:.2%} threshold"
+            )
+
+        # Soft kill: smaller loss but still concerning
+        if daily_loss_pct > soft_kill_threshold_pct:
+            return False, True, (
+                f"SOFT KILL [{sleeve_name}]: Daily loss {daily_loss_pct:.2%} > "
+                f"{soft_kill_threshold_pct:.2%} soft threshold"
+            )
+
+        return False, False, "No kill-switch triggered"
+
+    def compute_sleeve_stress_score(
+        self,
+        vix_level: float,
+        spread_z: Optional[float] = None,
+        bund_yield_mom: Optional[float] = None
+    ) -> float:
+        """
+        Compute stress score for sleeve-level decisions.
+
+        v3.0: Used by sovereign_rates_short for deflation guard calculation.
+
+        Args:
+            vix_level: Current VIX level
+            spread_z: Optional spread z-score (for fragmentation)
+            bund_yield_mom: Optional Bund yield momentum (bps, 20-day)
+
+        Returns:
+            Stress score between 0.0 (no stress) and 1.0 (maximum stress)
+        """
+        stress_components = []
+
+        # VIX component (0-1 scale, maxes at VIX 40)
+        vix_stress = min(1.0, max(0.0, (vix_level - 15) / 25))
+        stress_components.append(('vix', vix_stress, 0.4))
+
+        # Spread z-score component (optional)
+        if spread_z is not None:
+            # Positive z = widening = stress
+            spread_stress = min(1.0, max(0.0, spread_z / 3.0))
+            stress_components.append(('spread', spread_stress, 0.3))
+
+        # Bund yield momentum component (optional)
+        if bund_yield_mom is not None:
+            # Negative momentum (rates falling) = flight to quality = stress
+            yield_stress = min(1.0, max(0.0, -bund_yield_mom / 50))
+            stress_components.append(('yield', yield_stress, 0.3))
+
+        # Weighted average
+        if not stress_components:
+            return vix_stress
+
+        total_weight = sum(c[2] for c in stress_components)
+        weighted_stress = sum(c[1] * c[2] for c in stress_components) / total_weight
+
+        return weighted_stress
+
+    def is_deflation_guard_active(
+        self,
+        vix_level: float,
+        stress_score: float,
+        bund_yield_change_5d: float,
+        bund_yield_mom_20d: float,
+        vix_threshold: float = 30.0,
+        stress_threshold: float = 0.75,
+        yield_5d_threshold: float = -30.0,
+        yield_20d_threshold: float = -40.0
+    ) -> Tuple[bool, str]:
+        """
+        Check if deflation guard should be active.
+
+        v3.0: Used by sovereign_rates_short to determine if sleeve should exit.
+
+        Deflation guard triggers when BOTH:
+        1. Risk-off: VIX > threshold OR stress_score > threshold
+        2. Rates-down shock: Bund yield falling rapidly
+
+        Args:
+            vix_level: Current VIX level
+            stress_score: Current stress score (0-1)
+            bund_yield_change_5d: 5-day change in Bund yield (bps)
+            bund_yield_mom_20d: 20-day change in Bund yield (bps)
+            vix_threshold: VIX threshold for risk-off
+            stress_threshold: Stress score threshold for risk-off
+            yield_5d_threshold: 5-day yield drop threshold (bps)
+            yield_20d_threshold: 20-day yield drop threshold (bps)
+
+        Returns:
+            Tuple of (is_active, reason)
+        """
+        # Check risk-off condition
+        risk_off = vix_level > vix_threshold or stress_score > stress_threshold
+        risk_off_reason = []
+        if vix_level > vix_threshold:
+            risk_off_reason.append(f"VIX={vix_level:.1f}>{vix_threshold}")
+        if stress_score > stress_threshold:
+            risk_off_reason.append(f"stress={stress_score:.2f}>{stress_threshold}")
+
+        # Check rates-down shock condition
+        rates_down_shock = (
+            bund_yield_change_5d < yield_5d_threshold or
+            bund_yield_mom_20d < yield_20d_threshold
+        )
+        rates_reason = []
+        if bund_yield_change_5d < yield_5d_threshold:
+            rates_reason.append(f"5d_yield={bund_yield_change_5d:.0f}bps<{yield_5d_threshold}bps")
+        if bund_yield_mom_20d < yield_20d_threshold:
+            rates_reason.append(f"20d_yield={bund_yield_mom_20d:.0f}bps<{yield_20d_threshold}bps")
+
+        # Deflation guard = risk_off AND rates_down_shock
+        deflation_guard = risk_off and rates_down_shock
+
+        if deflation_guard:
+            reason = f"DEFLATION GUARD: {', '.join(risk_off_reason)} AND {', '.join(rates_reason)}"
+        else:
+            components = []
+            if risk_off:
+                components.append(f"risk_off=True ({', '.join(risk_off_reason)})")
+            else:
+                components.append("risk_off=False")
+            if rates_down_shock:
+                components.append(f"rates_down=True ({', '.join(rates_reason)})")
+            else:
+                components.append("rates_down=False")
+            reason = f"No deflation guard: {', '.join(components)}"
+
+        return deflation_guard, reason

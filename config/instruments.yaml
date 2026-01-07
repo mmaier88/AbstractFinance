@@ -786,3 +786,59 @@ sector_pairs:
       growth_exposure: -0.2
       value_exposure: 0.3
       description: "iShares STOXX Europe 600 Utilities"
+
+# =============================================================================
+# SOVEREIGN RATES SHORT (v3.0) - Bond Yield Data
+# For fragmentation signal calculation (BTP-Bund spread)
+# Note: Actual yields fetched via IBKR bond data or external API
+# =============================================================================
+sovereign_yields:
+  # German 10Y Bund yield (reference)
+  bund_10y_yield:
+    symbol: "BUND10Y"
+    data_source: "calculated"           # Calculated from FGBL futures price
+    fallback_source: "yahoo"            # ^TNX equivalent for EU
+    currency: "EUR"
+    description: "German 10-Year Bund Yield"
+
+  # Italian 10Y BTP yield
+  btp_10y_yield:
+    symbol: "BTP10Y"
+    data_source: "calculated"           # Calculated from FBTP futures price
+    fallback_source: "yahoo"
+    currency: "EUR"
+    description: "Italian 10-Year BTP Yield"
+
+  # French 10Y OAT yield
+  oat_10y_yield:
+    symbol: "OAT10Y"
+    data_source: "calculated"           # Calculated from FOAT futures price
+    fallback_source: "yahoo"
+    currency: "EUR"
+    description: "French 10-Year OAT Yield"
+
+# ETF proxies for sovereign rates short (fallback when futures unavailable)
+sovereign_etf_proxies:
+  # Italy equity ETF (correlation to BTP stress)
+  italy_ewi:
+    symbol: "EWI"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI Italy ETF"
+
+  # Germany equity ETF (reference)
+  germany_ewg:
+    symbol: "EWG"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI Germany ETF"
+
+  # France equity ETF
+  france_ewq:
+    symbol: "EWQ"
+    exchange: "ARCA"
+    sec_type: "STK"
+    currency: "USD"
+    description: "iShares MSCI France ETF"

@@ -1,0 +1,99 @@
+#!/bin/bash
+# Docker Compose wrapper that injects secrets from 1Password MCP server
+#
+# This script:
+# 1. Fetches secrets from MCP server (91.99.97.249:8000)
+# 2. Resolves all op:// references in .env.template
+# 3. Creates a temporary .env file
+# 4. Runs docker compose with the secrets
+# 5. Securely deletes the temporary file
+#
+# Usage: ./dc-mcp up -d, ./dc-mcp logs, ./dc-mcp ps, etc.
+#
+# Requires: MCP_API_KEY environment variable
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK_DIR="/srv/abstractfinance"
+TEMPLATE_FILE="$WORK_DIR/.env.template"
+TEMP_ENV_FILE=$(mktemp /tmp/abstractfinance-env.XXXXXX)
+
+# Cleanup on exit
+cleanup() {
+    if [ -f "$TEMP_ENV_FILE" ]; then
+        # Secure delete: overwrite with random data before removing
+        dd if=/dev/urandom of="$TEMP_ENV_FILE" bs=1k count=1 2>/dev/null || true
+        rm -f "$TEMP_ENV_FILE"
+    fi
+}
+trap cleanup EXIT
+
+# Check for MCP_API_KEY
+if [ -z "$MCP_API_KEY" ]; then
+    # Try to source from secrets file
+    if [ -f "/etc/abstractfinance-secrets.env" ]; then
+        source /etc/abstractfinance-secrets.env
+    else
+        echo "Error: MCP_API_KEY not set" >&2
+        echo "Set via environment or /etc/abstractfinance-secrets.env" >&2
+        exit 1
+    fi
+fi
+
+# Check template exists
+if [ ! -f "$TEMPLATE_FILE" ]; then
+    echo "Error: Template file not found: $TEMPLATE_FILE" >&2
+    exit 1
+fi
+
+cd "$WORK_DIR"
+
+# Resolve secrets and create temp env file
+echo "# Auto-generated - DO NOT COMMIT" > "$TEMP_ENV_FILE"
+echo "# Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TEMP_ENV_FILE"
+
+# Process template line by line
+while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and empty lines
+    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+    fi
+
+    # Parse KEY=VALUE
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+
+        # Check if value is an op:// reference
+        if [[ "$value" =~ ^op://([^/]+)/([^/]+)/(.+)$ ]]; then
+            vault="${BASH_REMATCH[1]}"
+            item="${BASH_REMATCH[2]}"
+            field="${BASH_REMATCH[3]}"
+
+            # Fetch from MCP
+            response=$(curl -s -X POST "http://91.99.97.249:8000/secret" \
+                -H "Authorization: Bearer $MCP_API_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{\"vault\": \"$vault\", \"item\": \"$item\", \"field\": \"$field\"}" 2>/dev/null)
+
+            # Extract value from JSON response
+            resolved=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
+
+            if [ -n "$resolved" ]; then
+                echo "${key}=${resolved}" >> "$TEMP_ENV_FILE"
+            else
+                echo "Warning: Failed to resolve $key (op://$vault/$item/$field)" >&2
+            fi
+        else
+            # Not an op:// reference, use as-is
+            echo "${key}=${value}" >> "$TEMP_ENV_FILE"
+        fi
+    fi
+done < "$TEMPLATE_FILE"
+
+# Set restrictive permissions
+chmod 600 "$TEMP_ENV_FILE"
+
+# Run docker compose with the resolved env file
+exec docker compose --env-file "$TEMP_ENV_FILE" "$@"
